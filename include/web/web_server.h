@@ -152,11 +152,15 @@ void respondOk()
     server.send(200, "application/json", "{\"ok\":true}");
 }
 
+// 从 POST 文本体里提取布尔语义。
+// 当前前端发的是 `true/false` 或 `1/0`，这里只做宽松解析。
 bool parseBodyFlag()
 {
     return server.arg("plain").indexOf("true") >= 0 || server.arg("plain").indexOf('1') >= 0;
 }
 
+// 绑定所有 Web 路由。
+// 页面只暴露控制面和状态查询，不再承载 OTA 上传入口。
 void bindRoutes()
 {
     server.on("/", HTTP_GET, []() {
@@ -253,17 +257,21 @@ void bindRoutes()
 }
 }
 
+// 注入业务处理层和运行态上下文。
 inline void webServerSetContext(CarManagerBase *handler, DualCanRuntime *runtime)
 {
     webHandler = handler;
     webRuntime = runtime;
 }
 
+// 返回当前是否允许串口侧打印原始 CAN 帧。
 inline bool webServerSerialLoggingEnabled()
 {
     return serialPrintEnabled;
 }
 
+// 初始化 WiFi AP、DNS 劫持和 Web 控制入口。
+// 这里故意只启动控制平面，不和 BLE OTA 的广播职责混在一起。
 inline void webServerInit()
 {
     if (webReady)
@@ -287,6 +295,7 @@ inline void webServerInit()
     Serial.println(WiFi.softAPIP());
 }
 
+// 推进 Web 控制面循环。
 inline void webServerLoop()
 {
     if (!webReady)
