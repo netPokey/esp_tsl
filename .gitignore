@@ -1,2 +1,4 @@
 ._*
-.pio/
+.pio/build
+.pio/build_cache
+.pio/build_flags.*

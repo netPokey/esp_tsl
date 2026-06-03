@@ -23,9 +23,12 @@
 #define FLIPPER_FW_VERSION "0.3.0"
 #endif
 
+// 串口桥接层。
+// 作用：提供一条独立于 WiFi 页面之外的文本控制面，方便接 Flipper、蓝牙串口、脚本宿主。
 class UartBridge
 {
 public:
+    // 初始化串口桥，并绑定业务处理层与运行态。
     void begin(CarManagerBase *handler, DualCanRuntime *runtime)
     {
         handler_ = handler;
@@ -34,6 +37,8 @@ public:
         emitHello();
     }
 
+    // 推进串口桥状态机。
+    // 执行顺序是：收命令、按需推流状态、按需镜像日志。
     void loop()
     {
         consumeIncomingBytes();
@@ -53,6 +58,8 @@ private:
     bool streamEnabled_ = false;
     bool logMirrorEnabled_ = false;
 
+    // 按行读取串口输入。
+    // 命令协议是轻量文本 DSL：一行一条，换行提交，超长输入直接丢弃重新同步。
     void consumeIncomingBytes()
     {
         while (port_.available())
@@ -76,6 +83,7 @@ private:
         }
     }
 
+    // 在推流模式下定期吐出三类摘要：控制状态、电池状态、双 CAN 统计。
     void emitPeriodicStatusIfNeeded()
     {
         if (!streamEnabled_)
@@ -91,6 +99,8 @@ private:
         emitBusStats();
     }
 
+    // 把新增日志镜像到串口侧。
+    // 这样外部宿主不需要轮询整个日志缓冲，只消费增量事件即可。
     void mirrorNewLogsIfNeeded()
     {
         if (!logMirrorEnabled_)
@@ -109,6 +119,8 @@ private:
         mirroredLogCount_ = total;
     }
 
+    // 分发一条已经收完整的命令行。
+    // 协议格式固定为 `CMD <verb> [arg]`，这里把文本命令映射到统一业务控制接口。
     void dispatch(char *line)
     {
         char *prefix = strtok(line, " ");
@@ -235,6 +247,7 @@ private:
         err(verb, "unknown");
     }
 
+    // 解析 on/off 或 1/0 形式的布尔参数。
     bool parseOnOff(const char *arg, bool &value) const
     {
         if (!arg)
@@ -252,6 +265,7 @@ private:
         return false;
     }
 
+    // 输出握手消息，告诉外部控制器当前固件版本和运行模式。
     void emitHello()
     {
         port_.printf("EVT HELLO ver=%s mode=dual-can\n", FLIPPER_FW_VERSION);

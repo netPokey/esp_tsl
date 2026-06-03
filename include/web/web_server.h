@@ -20,11 +20,13 @@ static DualCanRuntime *webRuntime = nullptr;
 static bool serialPrintEnabled = true;
 static bool webReady = false;
 
+// 把布尔值格式化成 JSON 字面量。
 String boolJson(bool value)
 {
     return value ? "true" : "false";
 }
 
+// 把单条总线运行态序列化成 JSON 片段。
 String busJson(const CanBusRuntime &bus)
 {
     String out = "{";
@@ -37,6 +39,7 @@ String busJson(const CanBusRuntime &bus)
     return out;
 }
 
+// 把最近一帧的 data 区转换成十六进制字符串，供页面直接展示。
 String dataHex(const uint8_t *data, uint8_t dlc)
 {
     String out;
@@ -52,6 +55,8 @@ String dataHex(const uint8_t *data, uint8_t dlc)
     return out;
 }
 
+// 生成 Web 页面轮询使用的状态快照。
+// 这里把业务状态、双 CAN 统计、最后一帧和日志缓冲压成一个 JSON 文档。
 String buildStatusJson()
 {
     String out = "{";
@@ -126,6 +131,7 @@ String buildStatusJson()
     return out;
 }
 
+// 从 NVS 读取上次保存的控制参数，并回灌到当前业务处理层。
 void applySavedPreferences()
 {
     if (!webHandler)
@@ -140,6 +146,7 @@ void applySavedPreferences()
     serialPrintEnabled = prefs.getBool("print", true);
 }
 
+// 统一返回一个最小成功响应，供开关类接口复用。
 void respondOk()
 {
     server.send(200, "application/json", "{\"ok\":true}");

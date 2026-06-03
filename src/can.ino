@@ -34,6 +34,7 @@ static bool canABSendFlag = true;
 static const uint8_t kCanATxData[kFrameDataSize] = {8, 7, 6, 5, 4, 3, 2, 1};
 static const uint8_t kCanBTxData[kFrameDataSize] = {1, 2, 3, 4, 5, 6, 7, 8};
 
+// 构造一帧最小 CAN 示例报文。
 CanFrame makeFrame(uint32_t id, const uint8_t *data, uint8_t dlc)
 {
     CanFrame frame{};
@@ -43,6 +44,7 @@ CanFrame makeFrame(uint32_t id, const uint8_t *data, uint8_t dlc)
     return frame;
 }
 
+// 初始化单条参考总线，并在串口输出初始化结果。
 bool initBus(CanDriver &driver, const char *label)
 {
     if (!driver.init())
@@ -54,6 +56,7 @@ bool initBus(CanDriver &driver, const char *label)
     return true;
 }
 
+// 把接收到的一帧参考报文展开打印到串口。
 void printFrame(const char *label, const CanFrame &frame)
 {
     Serial.printf("\n%s received data\n", label);
@@ -66,6 +69,7 @@ void printFrame(const char *label, const CanFrame &frame)
     Serial.println();
 }
 
+// 持续读空某条总线上的参考流量。
 void drainBus(CanDriver &driver, const char *label)
 {
     CanFrame frame;
@@ -76,13 +80,17 @@ void drainBus(CanDriver &driver, const char *label)
     }
 }
 
+// 发送一帧参考测试报文。
 void sendFrame(CanDriver &driver, const char *label, const CanFrame &frame)
 {
     Serial.printf("%s: send data\n", label);
     driver.send(frame);
 }
 
-void setup()
+// 这个文件保留为最小双 CAN 收发参考，不再作为固件主入口。
+// 当前正式运行链路统一收口在 src/main.cpp，避免出现两套 setup/loop 并存。
+// 保留这组参考函数的目的，是方便后续核对底层驱动、波特率和最小发收路径。
+void canLegacyDemoSetup()
 {
     Serial.begin(115200);
     Serial.println("Ciallo");
@@ -91,7 +99,7 @@ void setup()
     initBus(Can_B, "can b");
 }
 
-void loop()
+void canLegacyDemoLoop()
 {
     drainBus(Can_A, "can a");
     drainBus(Can_B, "can b");

@@ -8,33 +8,47 @@
 #include "drivers/can_driver.h"
 #include "runtime_state.h"
 
+// 业务处理层抽象基类。
+// 作用：把“报文解析 / 周期任务 / 控制开关 / 对外状态投影”收口到统一接口，
+// 这样 Web、串口、脚本层都只依赖这一个控制面，不需要感知底层双 CAN 细节。
 class CarManagerBase
 {
 public:
     virtual ~CarManagerBase() = default;
 
+    // 处理一帧来自任意总线的原始 CAN 报文。
+    // 输入包含来源总线、原始帧、发送能力和共享运行态，派生类可在这里完成解析或回注。
     virtual void handleFrame(CanBusId sourceBus,
                              CanFrame &frame,
                              CanDriver *sourceDriver,
                              DualCanRuntime &runtime) = 0;
 
+    // 执行与车辆控制相关的周期任务。
+    // 当前主要用于预热维持帧，后续也可扩展为脚本调度、节流发送、状态超时补偿。
     virtual void runPeriodicTasks(CanBusId controlBus,
                                   CanDriver *controlDriver,
                                   DualCanRuntime &runtime) = 0;
 
+    // 返回当前业务层关心的报文 ID 过滤表。
+    // 主流程会把它同步给双总线驱动，尽量把无关流量挡在解析层外面。
     virtual const uint32_t *filterIds() const = 0;
     virtual uint8_t filterIdCount() const = 0;
 
+    // 设置是否强制打开 FSD 路径。
+    // 这里保留成统一入口，避免 Web / UART / 脚本层各自直接碰底层共享开关。
     void setForceFSDEnabled(bool enabled)
     {
         setForceFSDEnabledInternal(enabled);
     }
 
+    // 读取当前强制 FSD 的外部可见状态。
     bool getForceFSDEnabled() const
     {
         return isForceFSDEnabled();
     }
 
+    // 手动切换速度策略档位。
+    // 外部输入会被限制在有效区间内，避免控制面把非法值写入处理层。
     void setSpeedProfileManual(int profile)
     {
         if (profile < 0)
@@ -44,6 +58,8 @@ public:
         speedProfile = profile;
     }
 
+    // 设置电池预热请求状态。
+    // 当请求被关闭时，同时把当前激活态清掉，避免 UI 继续展示为执行中。
     void setPreconditioningRequested(bool enabled)
     {
         precondRequested = enabled;
@@ -51,21 +67,26 @@ public:
             precondActive = false;
     }
 
+    // 设置紧急车辆检测开关。
     void setEmergencyDetection(bool enabled)
     {
         emergencyDetect = enabled;
     }
 
+    // 设置 ISA 速度覆盖开关。
     void setIsaOverride(bool enabled)
     {
         isaSpeedOverride = enabled;
     }
 
+    // 设置 ISA 提示音抑制开关。
     void setIsaSuppress(bool enabled)
     {
         isaSuppress = enabled;
     }
 
+    // 设置 ISA 速度倍率。
+    // 值被限制在 0-7，和当前控制帧里可表达的范围对齐。
     void setIsaMultiplier(uint8_t value)
     {
         if (value > 7)
@@ -73,6 +94,7 @@ public:
         isaSpeedMul = value;
     }
 
+    // 把内部速度档位映射成人类可读名称，供 Web / UART 展示层直接使用。
     const char *speedProfileName() const
     {
         static const char *kNames[] = {"Chill", "Normal", "Hurry", "Max", "Sloth"};
@@ -81,11 +103,13 @@ public:
         return kNames[speedProfile];
     }
 
+    // 返回当前优先控制总线名称。
     const char *controlBusName() const
     {
         return canBusName(preferredControlBus);
     }
 
+    // 返回当前优先控制总线枚举值。
     CanBusId controlBus() const
     {
         return preferredControlBus;
@@ -215,6 +239,8 @@ public:
 private:
     unsigned long lastPrecondSendMs_ = 0;
 
+    // 拦截并重发 ISA 提示音相关报文。
+    // 这是一个“读到即改、原总线回注”的快速路径，命中后直接结束当前帧处理。
     bool processIsaChimeSuppression(CanFrame &frame,
                                     CanDriver *sourceDriver,
                                     DualCanRuntime &runtime,
@@ -237,6 +263,7 @@ private:
         return true;
     }
 
+    // 解析跟车距离档位，并映射到当前内部速度策略档位。
     void processFollowDistanceFrame(const CanFrame &frame)
     {
         const uint8_t followDistance = (frame.data[5] & 0xE0) >> 5;
@@ -262,6 +289,8 @@ private:
         }
     }
 
+    // 处理 Tesla AP 控制帧。
+    // 该帧按 mux 分段承载不同语义，这里先锁定控制总线，再把不同子通道分发到独立函数。
     void processAutopilotControlFrame(CanBusId sourceBus,
                                       CanFrame &frame,
                                       CanDriver *sourceDriver,
@@ -294,6 +323,8 @@ private:
         }
     }
 
+    // 处理 mux0 控制片段。
+    // 这里负责同步 FSD 选择态、解析速度偏移，并在需要时对关键开关位做回注。
     void processAutopilotMux0(CanFrame &frame,
                               bool fsdSelected,
                               CanDriver *sourceDriver,
@@ -323,6 +354,8 @@ private:
         sentCount = runtime.totalTxFrames;
     }
 
+    // 处理 mux1 控制片段。
+    // 这里主要处理 ISA 相关位和辅助控制位，属于较轻量的原帧修补路径。
     void processAutopilotMux1(CanFrame &frame,
                               CanDriver *sourceDriver,
                               DualCanRuntime &runtime,
@@ -338,6 +371,8 @@ private:
         sentCount = runtime.totalTxFrames;
     }
 
+    // 处理 mux2 控制片段。
+    // 这里主要改写速度档位和 ISA 速度偏移编码，是速度控制注入的核心出口。
     void processAutopilotMux2(CanFrame &frame,
                               bool fsdSelected,
                               CanDriver *sourceDriver,
@@ -358,6 +393,7 @@ private:
         sentCount = runtime.totalTxFrames;
     }
 
+    // 把内部速度策略档位映射成 Tesla 控制帧使用的编码值。
     uint8_t mapSpeedProfileToTeslaValue(int profile) const
     {
         switch (profile)

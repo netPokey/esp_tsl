@@ -5,14 +5,21 @@
 #include "handlers.h"
 #include "runtime_state.h"
 
+// 当前 LCD 模块是一个“显示占位层”。
+// 作用：先把展示接口稳定下来，让主流程、解析层和控制层都能按统一方式更新显示。
+// 现阶段通过串口输出模拟显示内容，后续替换成真实屏幕驱动时只需要改这个文件。
 class LCDDisplay
 {
 public:
+    // 初始化显示层。
+    // 当前版本只做刷新节流状态复位，不绑定具体硬件库。
     void init()
     {
         lastRefreshMs_ = 0;
     }
 
+    // 刷新显示内容。
+    // 这里展示的是“当前控制总线 + FSD 状态 + 双 CAN 统计 + 预热状态”的核心运行面板。
     void update(const CarManagerBase *handler, const DualCanRuntime *runtime)
     {
         if (!handler || !runtime)
@@ -37,6 +44,8 @@ public:
             handler->precondActive ? 1 : 0);
     }
 
+    // 展示一条短消息。
+    // 当前通过串口模拟状态条，后续接真实屏幕时仍保留这个入口给启动提示和告警使用。
     void showMessage(const char *msg, uint16_t color = 0xFFFF)
     {
         (void)color;

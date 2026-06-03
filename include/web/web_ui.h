@@ -27,7 +27,7 @@ small{color:var(--muted)}
   <div class="hero">
     <div>
       <div class="title">TeslaCAN Dual Bus</div>
-      <div class="sub">双 CAN 采集 + WiFi 控制，当前页面只负责控制层，后续蓝牙和脚本层可复用同一组接口。</div>
+      <div class="sub">双 CAN 采集 + WiFi 控制 + BLE OTA，控制层和升级链路已解耦，后续蓝牙交互和脚本层可继续复用同一组状态接口。</div>
     </div>
     <div class="pill" id="onlineState">连接中</div>
   </div>
