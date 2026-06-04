@@ -2,3 +2,6 @@
 .pio/build
 .pio/build_cache
 .pio/build_flags.*
+*.bin
+*.pyc
+__pycache__/

@@ -21,7 +21,7 @@ public:
     // 刷新显示内容。
     // 这里展示的是“当前控制总线 + FSD 状态 + 双 CAN 统计 + 预热状态”的核心运行面板。
     void update(const CarManagerBase *handler, const DualCanRuntime *runtime)
-    {
+    {return;
         if (!handler || !runtime)
             return;
 
@@ -31,7 +31,7 @@ public:
         lastRefreshAtMs_ = now;
 
         Serial.printf(
-            "[LCD] ctrl=%s fsd=%d profile=%s soc=%.1f%% power=%.2fkW A(rx=%lu tx=%lu) B(rx=%lu tx=%lu) precond=%d\n",
+            "[LCD] ctrl=%s fsd=%d profile=%s soc=%.1f%% power=%.2fkW A(rx=%lu tx=%lu) B(rx=%lu tx=%lu) precond=%d\r\n",
             handler->controlBusName(),
             handler->fsdEnabled ? 1 : 0,
             handler->speedProfileName(),
@@ -47,11 +47,11 @@ public:
     // 展示一条短消息。
     // 当前通过串口模拟状态条，后续接真实屏幕时仍保留这个入口给启动提示和告警使用。
     void showMessage(const char *msg, uint16_t color = 0xFFFF)
-    {
+    {return;
         (void)color;
         if (!msg)
             return;
-        Serial.printf("[LCD] %s\n", msg);
+        Serial.printf("[LCD] %s\r\n", msg);
     }
 
 private:

@@ -30,6 +30,18 @@ static bool serialPrintEnabled = true;
 // Web 控制面是否已经完成初始化。
 static bool webReady = false;
 
+// 当前 WiFi 是否运行在 STA 已连接状态。
+static bool wifiStationConnected = false;
+
+// 当前 WiFi 是否运行在 AP 回退状态。
+static bool wifiApMode = false;
+
+// 当前 Web 控制面的可访问 IP。
+static IPAddress webAccessIp;
+
+// 当前连接或回退使用的网络名称。
+static String wifiActiveSsid;
+
 // 把布尔值格式化成 JSON 字面量。
 String boolJson(bool value)
 {
@@ -112,6 +124,14 @@ String buildStatusJson()
     }
 
     out += ",\"uptime_s\":" + String(millis() / 1000UL);
+    out += ",\"wifi\":{";
+    out += "\"mode\":\"" + String(wifiStationConnected ? "STA" : "AP") + "\"";
+    out += ",\"connected\":" + boolJson(wifiStationConnected);
+    out += ",\"ap\":" + boolJson(wifiApMode);
+    out += ",\"ssid\":\"" + wifiActiveSsid + "\"";
+    out += ",\"ip\":\"" + webAccessIp.toString() + "\"";
+    out += ",\"configured\":" + boolJson(prefs.getString("wifiSsid", "").length() > 0);
+    out += "}";
 
     if (webRuntime)
     {
@@ -177,6 +197,60 @@ void respondOk()
 bool parseBodyFlag()
 {
     return server.arg("plain").indexOf("true") >= 0 || server.arg("plain").indexOf('1') >= 0;
+}
+
+// 尝试连接已保存的上游 WiFi。
+bool connectSavedWifi()
+{
+    const String ssid = prefs.getString("wifiSsid", "");
+    const String password = prefs.getString("wifiPass", "");
+    if (ssid.length() == 0)
+        return false;
+
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(ssid.c_str(), password.c_str());
+
+    const unsigned long startedAt = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - startedAt < 12000)
+        delay(250);
+
+    if (WiFi.status() != WL_CONNECTED)
+    {
+        WiFi.disconnect(false);
+        globalLog.add("WiFi STA connect failed, falling back to AP");
+        return false;
+    }
+
+    wifiStationConnected = true;
+    wifiApMode = false;
+    wifiActiveSsid = ssid;
+    webAccessIp = WiFi.localIP();
+
+    globalLog.add("WiFi STA connected");
+    Serial.print("WiFi STA connected: ");
+    Serial.println(ssid);
+    Serial.print("Dashboard: http://");
+    Serial.println(webAccessIp);
+    return true;
+}
+
+// 启动 AP 回退入口。
+void startFallbackAp()
+{
+    WiFi.mode(WIFI_AP);
+    WiFi.softAP("TeslaCAN", "tesla1234");
+    delay(120);
+
+    wifiStationConnected = false;
+    wifiApMode = true;
+    wifiActiveSsid = "TeslaCAN";
+    webAccessIp = WiFi.softAPIP();
+    dnsServer.start(53, "*", webAccessIp);
+
+    globalLog.add("WiFi AP ready: TeslaCAN / tesla1234");
+    Serial.println("WiFi AP started: TeslaCAN");
+    Serial.print("Dashboard: http://");
+    Serial.println(webAccessIp);
 }
 
 // 绑定所有 Web 路由。
@@ -278,6 +352,41 @@ void bindRoutes()
         respondOk();
     });
 
+    server.on("/api/wifi", HTTP_POST, []() {
+        String ssid = server.arg("ssid");
+        String password = server.arg("password");
+
+        if (ssid.length() == 0)
+        {
+            String body = server.arg("plain");
+            int split = body.indexOf('\n');
+            if (split < 0)
+                split = body.indexOf('|');
+            if (split >= 0)
+            {
+                ssid = body.substring(0, split);
+                password = body.substring(split + 1);
+            }
+            else
+            {
+                ssid = body;
+            }
+            ssid.trim();
+            password.trim();
+        }
+
+        if (ssid.length() == 0)
+        {
+            server.send(400, "application/json", "{\"ok\":false,\"error\":\"ssid_required\"}");
+            return;
+        }
+
+        prefs.putString("wifiSsid", ssid);
+        prefs.putString("wifiPass", password);
+        globalLog.add("WiFi credentials saved; restart to apply");
+        server.send(200, "application/json", "{\"ok\":true,\"restart_required\":true}");
+    });
+
     server.onNotFound([]() {
         server.sendHeader("Location", "/", true);
         server.send(302, "text/plain", "");
@@ -308,19 +417,12 @@ inline void webServerInit()
     prefs.begin("teslaCAN", false);
     applySavedPreferences();
 
-    WiFi.mode(WIFI_AP);
-    WiFi.softAP("TeslaCAN", "tesla1234");
-    delay(120);
-    dnsServer.start(53, "*", WiFi.softAPIP());
+    if (!connectSavedWifi())
+        startFallbackAp();
 
     bindRoutes();
     server.begin();
     webReady = true;
-
-    globalLog.add("WiFi AP ready: TeslaCAN / tesla1234");
-    Serial.println("WiFi AP started: TeslaCAN");
-    Serial.print("Dashboard: http://");
-    Serial.println(WiFi.softAPIP());
 }
 
 // 推进 Web 控制面循环。
@@ -328,6 +430,7 @@ inline void webServerLoop()
 {
     if (!webReady)
         return;
-    dnsServer.processNextRequest();
+    if (wifiApMode)
+        dnsServer.processNextRequest();
     server.handleClient();
 }

@@ -4,6 +4,9 @@
 #include <BLEDevice.h>
 #include <BLEServer.h>
 #include <BLEOTA.h>
+#if defined(CONFIG_BLUEDROID_ENABLED)
+#include <esp_gatts_api.h>
+#endif
 
 #include "log_buffer.h"
 
@@ -39,7 +42,7 @@ public:
         serviceReady_ = true;
 
         globalLog.add("BLE OTA ready");
-        Serial.printf("BLE OTA started: %s\n", deviceName_);
+        Serial.printf("BLE OTA started: %s\r\n", deviceName_);
         Serial.println("BLE OTA WebApp: https://gb88.github.io/BLEOTA/");
     }
 
@@ -73,6 +76,12 @@ public:
         return clientConnected_;
     }
 
+    // 返回当前是否正在写入 OTA 数据，供主循环进入轻载模式。
+    bool updating()
+    {
+        return otaService_.isRunning();
+    }
+
     // 返回当前广播设备名，供页面或日志输出使用。
     const char *deviceName() const
     {
@@ -92,12 +101,23 @@ private:
 
         void onConnect(BLEServer *server) override
         {
-            (void)server;
             if (!owner_)
                 return;
             owner_->clientConnected_ = true;
             globalLog.add("BLE OTA client connected");
         }
+
+#if defined(CONFIG_BLUEDROID_ENABLED)
+        void onConnect(BLEServer *server, esp_ble_gatts_cb_param_t *param) override
+        {
+            if (!owner_)
+                return;
+            owner_->clientConnected_ = true;
+            if (server && param)
+                server->updateConnParams(param->connect.remote_bda, 0x06, 0x12, 0, 2000);
+            globalLog.add("BLE OTA client connected: fast interval requested");
+        }
+#endif
 
         void onDisconnect(BLEServer *server) override
         {

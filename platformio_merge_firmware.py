@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Merge existing PlatformIO ESP32 build outputs into one 0x0 flash image.
 
-This script reads the existing .pio/build/<env>/idedata.json file and calls
+This script reads PlatformIO build outputs from .pio/build/<env> and calls
 esptool. It does not invoke platformio, so it will not trigger a project build.
 
 Default output name format: [firmware-source]_firmware_<YYYYmmddHHMM>.bin.
@@ -252,17 +252,78 @@ def format_command(command: list[str]) -> str:
     return " ".join(shlex.quote(part) for part in command)
 
 
-def esptool_supports_modern_merge() -> bool:
-    try:
-        result = subprocess.run(
-            [sys.executable, "-m", "esptool", "merge-bin", "--help"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-        )
-    except FileNotFoundError:
-        return False
+def platformio_esptool_script() -> Path | None:
+    candidates = [
+        Path.home() / ".platformio" / "packages" / "tool-esptoolpy" / "esptool.py",
+        Path.home()
+        / ".platformio"
+        / "packages"
+        / "framework-espidf"
+        / "components"
+        / "esptool_py"
+        / "esptool"
+        / "esptool.py",
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def python_module_available(module: str) -> bool:
+    result = subprocess.run(
+        [sys.executable, "-m", module, "--help"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
     return result.returncode == 0
+
+
+def platformio_python() -> Path | None:
+    candidates = [
+        Path.home() / ".platformio" / "penv" / "bin" / "python",
+        Path.home() / ".platformio" / "penv" / "Scripts" / "python.exe",
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def esptool_command_base() -> list[str]:
+    if python_module_available("esptool"):
+        return [sys.executable, "-m", "esptool"]
+
+    script = platformio_esptool_script()
+    python = platformio_python()
+    if script is not None and python is not None:
+        return [str(python), str(script)]
+    if script is not None:
+        return [sys.executable, str(script)]
+
+    raise SystemExit(
+        "Unable to find esptool. Install it with `python3 -m pip install esptool` "
+        "or let PlatformIO install tool-esptoolpy."
+    )
+
+
+def esptool_supports_modern_merge(command_base: list[str]) -> bool:
+    result = subprocess.run(
+        [*command_base, "merge-bin", "--help"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+def flash_files_from_build_outputs(build_dir: Path) -> list[tuple[str, Path]]:
+    return [
+        ("0x0000", (build_dir / "bootloader.bin").resolve()),
+        ("0x8000", (build_dir / "partitions.bin").resolve()),
+        ("0x10000", (build_dir / "firmware.bin").resolve()),
+    ]
 
 
 def flash_files_from_idedata(build_dir: Path, idedata: dict[str, Any]) -> list[tuple[str, Path]]:
@@ -287,11 +348,7 @@ def flash_files_from_idedata(build_dir: Path, idedata: dict[str, Any]) -> list[t
     files.append((str(app_offset), app_path.resolve()))
 
     if not files:
-        files = [
-            ("0x0000", (build_dir / "bootloader.bin").resolve()),
-            ("0x8000", (build_dir / "partitions.bin").resolve()),
-            ("0x10000", app_path.resolve()),
-        ]
+        return flash_files_from_build_outputs(build_dir)
 
     return sorted(files, key=lambda item: int(item[0], 0))
 
@@ -336,6 +393,7 @@ def append_flash_settings(
 
 def build_esptool_command(
     *,
+    command_base: list[str],
     chip: str,
     output: Path,
     flash_offset: str,
@@ -346,7 +404,7 @@ def build_esptool_command(
     flash_files: list[tuple[str, Path]],
     modern: bool,
 ) -> list[str]:
-    command = [sys.executable, "-m", "esptool", "--chip", chip]
+    command = [*command_base, "--chip", chip]
     if modern:
         command.extend(
             [
@@ -401,7 +459,7 @@ def main() -> int:
     if args.environment is None:
         environment = build_dir.name
 
-    idedata = load_json(build_dir / "idedata.json")
+    idedata = load_json(build_dir / "idedata.json", required=False)
     env_options = environment_options(config, environment)
 
     board_name = strip_inline_comment(env_options.get("board", ""))
@@ -425,7 +483,11 @@ def main() -> int:
         )
     chip = str(chip)
 
-    flash_files = flash_files_from_idedata(build_dir, idedata)
+    flash_files = (
+        flash_files_from_idedata(build_dir, idedata)
+        if idedata
+        else flash_files_from_build_outputs(build_dir)
+    )
     validate_build_files(flash_files)
     bootloader_path = next(
         (path for offset, path in flash_files if int(offset, 0) == 0), None
@@ -460,8 +522,10 @@ def main() -> int:
     )
     fill_flash_size = None if args.no_fill else (args.fill_flash_size or flash_size)
 
-    modern_esptool = esptool_supports_modern_merge()
+    command_base = esptool_command_base()
+    modern_esptool = esptool_supports_modern_merge(command_base)
     command = build_esptool_command(
+        command_base=command_base,
         chip=chip,
         output=output,
         flash_offset=args.flash_offset,

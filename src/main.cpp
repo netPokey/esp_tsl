@@ -290,6 +290,13 @@ void setup()
 // 执行顺序：双 CAN 收包 → 后台业务注入 → 输出层刷新。
 void loop()
 {
+    if (bleOta.updating())
+    {
+        bleOta.loop();
+        delay(1);
+        return;
+    }
+
     syncCanTxMode();
     processBusTraffic(makeCanAEndpoint());
     processBusTraffic(makeCanBEndpoint());
