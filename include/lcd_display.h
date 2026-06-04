@@ -15,7 +15,7 @@ public:
     // 当前版本只做刷新节流状态复位，不绑定具体硬件库。
     void init()
     {
-        lastRefreshMs_ = 0;
+        lastRefreshAtMs_ = 0;
     }
 
     // 刷新显示内容。
@@ -26,9 +26,9 @@ public:
             return;
 
         const unsigned long now = millis();
-        if (now - lastRefreshMs_ < 1200)
+        if (now - lastRefreshAtMs_ < 1200)
             return;
-        lastRefreshMs_ = now;
+        lastRefreshAtMs_ = now;
 
         Serial.printf(
             "[LCD] ctrl=%s fsd=%d profile=%s soc=%.1f%% power=%.2fkW A(rx=%lu tx=%lu) B(rx=%lu tx=%lu) precond=%d\n",
@@ -55,5 +55,6 @@ public:
     }
 
 private:
-    unsigned long lastRefreshMs_ = 0;
+    // 上一次完成显示刷新的时间戳，用于限制刷新频率。
+    unsigned long lastRefreshAtMs_ = 0;
 };

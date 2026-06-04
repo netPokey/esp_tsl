@@ -115,32 +115,72 @@ public:
         return preferredControlBus;
     }
 
+    // 对外展示的累计接收帧计数。
     uint32_t frameCount = 0;
+
+    // 对外展示的累计发送帧计数。
     uint32_t sentCount = 0;
 
+    // 当前 UI/控制链路是否处于 FSD 已选中状态。
     bool fsdEnabled = false;
+
+    // 当前内部速度策略档位。
+    // 这是业务层统一使用的抽象档位，不直接等同于底层 Tesla 位域值。
     int speedProfile = 0;
+
+    // 当前计算出的速度偏移值。
+    // 单位沿用现有控制链路语义，供注入层直接拆位写回。
     int speedOffset = 0;
 
+    // 是否启用紧急车辆检测相关控制位。
     bool emergencyDetect = true;
+
+    // 是否启用 ISA 速度覆盖。
     bool isaSpeedOverride = true;
+
+    // 是否启用 ISA 提示音抑制。
     bool isaSuppress = false;
+
+    // ISA 速度倍率。
+    // 输入来自控制面，最终影响速度偏移的放大倍数。
     uint8_t isaSpeedMul = 7;
 
+    // 电池包电压。
     float packVoltage = 0;
+
+    // 电池包电流。
     float packCurrent = 0;
+
+    // 电池包功率，单位 kW。
     float packPowerKW = 0;
+
+    // 电池 SOC 百分比。
     float socPercent = 0;
+
+    // 电池最低温度。
     float packTempMin = 0;
+
+    // 电池最高温度。
     float packTempMax = 0;
+
+    // UI 侧能耗投影，单位 Wh/km。
     float whPerKm = 0;
 
+    // 当前是否处于预热执行中。
     bool precondActive = false;
+
+    // 外部控制面是否请求了预热。
     bool precondRequested = false;
+
+    // 车辆当前是否允许预热。
     bool precondAllowed = false;
+
+    // 车辆当前是否认为预热有收益。
     bool precondWorthwhile = false;
 
 protected:
+    // 当前优先作为控制回注出口的总线。
+    // 谁先提供了关键控制帧，后续控制注入通常就跟随哪一条总线。
     CanBusId preferredControlBus = CanBusId::B;
 
 private:
@@ -150,17 +190,39 @@ private:
     }
 };
 
+// HW4 双 CAN 业务处理器。
+// 作用：
+// 1. 统一解析 AP / BMS / UI 等关键报文。
+// 2. 维护页面、串口和显示层所需的业务投影视图。
+// 3. 在控制总线上回注速度策略、ISA 覆盖和电池预热等控制报文。
 class HW4DualCanHandler : public CarManagerBase
 {
 public:
+    // AP 跟车距离报文，用来推导当前速度策略档位。
     static constexpr uint32_t CAN_AP_FOLLOW_DIST = 1016;
+
+    // AP 主控制报文，承载 FSD、ISA 与速度偏移等关键控制位。
     static constexpr uint32_t CAN_AP_CONTROL = 1021;
+
+    // ISA 提示音相关报文，用于抑制提示音时做原帧修补。
     static constexpr uint32_t CAN_ISA_CHIME = 921;
+
+    // 电池高压母线电压/电流报文。
     static constexpr uint32_t CAN_BMS_HV_BUS = 0x132;
+
+    // 电池 SOC 报文。
     static constexpr uint32_t CAN_BMS_SOC = 0x292;
+
+    // 电池状态报文，包含预热是否允许/是否值得等状态位。
     static constexpr uint32_t CAN_BMS_STATUS = 0x212;
+
+    // 电池热管理报文，包含温度上下界。
     static constexpr uint32_t CAN_BMS_THERMAL = 0x312;
+
+    // UI 能耗报文，用来提取 Wh/km。
     static constexpr uint32_t CAN_UI_ENERGY = 0x33A;
+
+    // 行程规划/预热控制报文。
     static constexpr uint32_t CAN_TRIP_PLANNING = 0x082;
 
     void handleFrame(CanBusId sourceBus,
@@ -237,7 +299,8 @@ public:
     }
 
 private:
-    unsigned long lastPrecondSendMs_ = 0;
+    // 上一次向车辆发送预热维持帧的时间戳。
+    unsigned long lastPreconditioningSendMs_ = 0;
 
     // 拦截并重发 ISA 提示音相关报文。
     // 这是一个“读到即改、原总线回注”的快速路径，命中后直接结束当前帧处理。
@@ -246,7 +309,7 @@ private:
                                     DualCanRuntime &runtime,
                                     CanBusId sourceBus)
     {
-        if (!isaSuppress || frame.id != CAN_ISA_CHIME || !sourceDriver)
+        if (!isaSuppress || frame.id != CAN_ISA_CHIME || !sourceDriver || !shouldAllowCanTx())
             return false;
 
         frame.data[1] |= 0x20;
@@ -341,7 +404,7 @@ private:
             scaledOffset = 200;
         speedOffset = scaledOffset;
 
-        if (!fsdSelected)
+        if (!fsdSelected || !shouldAllowCanTx())
             return;
 
         setBit(frame, 46, true);
@@ -361,6 +424,9 @@ private:
                               DualCanRuntime &runtime,
                               CanBusId sourceBus)
     {
+        if (!shouldAllowCanTx())
+            return;
+
         setBit(frame, 19, false);
         setBit(frame, 47, true);
         if (isaSpeedOverride)
@@ -379,6 +445,9 @@ private:
                               DualCanRuntime &runtime,
                               CanBusId sourceBus)
     {
+        if (!shouldAllowCanTx())
+            return;
+
         const uint8_t mappedProfile = mapSpeedProfileToTeslaValue(speedProfile);
         frame.data[7] = static_cast<uint8_t>((frame.data[7] & 0x1F) | ((mappedProfile & 0x07) << 5));
 
@@ -489,11 +558,11 @@ private:
             return;
         }
 
-        if (!controlDriver)
+        if (!controlDriver || !shouldAllowCanTx())
             return;
 
         const unsigned long now = millis();
-        if (now - lastPrecondSendMs_ < 100)
+        if (now - lastPreconditioningSendMs_ < 100)
             return;
 
         CanFrame frame{};
@@ -504,7 +573,7 @@ private:
 
         controlDriver->send(frame);
         runtime.noteTx(controlBus, frame);
-        lastPrecondSendMs_ = now;
+        lastPreconditioningSendMs_ = now;
         precondActive = true;
         sentCount = runtime.totalTxFrames;
     }

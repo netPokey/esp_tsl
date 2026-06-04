@@ -9,8 +9,13 @@
 // 作用域：驱动层、解析层、控制层和页面层都通过它识别当前帧来自哪条总线。
 enum class CanBusId : uint8_t
 {
+    // 外接 MCP2515 所在总线。
     A,
+
+    // ESP32 内建 TWAI 所在总线。
     B,
+
+    // 未知来源或当前没有明确归属的总线。
     Unknown,
 };
 
@@ -32,14 +37,31 @@ inline const char *canBusName(CanBusId bus)
 // 这里不做业务解析，只存最通用的收发统计和最近一帧快照。
 struct CanBusRuntime
 {
+    // 展示层使用的稳定总线名称。
     const char *name = "UNKNOWN";
+
+    // 当前是否认为这条总线在线可用。
     bool online = false;
+
+    // 累计接收帧数。
     uint32_t rxFrames = 0;
+
+    // 累计主动发送帧数。
     uint32_t txFrames = 0;
+
+    // 最近一次收发涉及的帧 ID。
     uint32_t lastId = 0;
+
+    // 最近一次收发涉及的有效数据长度。
     uint8_t lastDlc = 0;
+
+    // 最近一次收发的载荷快照。
     uint8_t lastData[8] = {};
+
+    // 最近一次观察到该总线有输入流量的时间戳。
     unsigned long lastSeenMs = 0;
+
+    // 最近一次主动向该总线注入报文的时间戳。
     unsigned long lastInjectedMs = 0;
 };
 
@@ -47,10 +69,19 @@ struct CanBusRuntime
 // 设计目标：把“全局统计”和“分总线统计”收敛到一个结构里，后续 WiFi、蓝牙、脚本层都直接复用它。
 struct DualCanRuntime
 {
+    // 运行态初始化时记录的启动时间基准。
     unsigned long bootMs = 0;
+
+    // 全局累计接收帧数。
     uint32_t totalRxFrames = 0;
+
+    // 全局累计发送帧数。
     uint32_t totalTxFrames = 0;
+
+    // 外接 MCP2515 总线运行态。
     CanBusRuntime busA;
+
+    // 内建 TWAI 总线运行态。
     CanBusRuntime busB;
 
     // 初始化运行态命名和启动时间。
@@ -84,14 +115,14 @@ struct DualCanRuntime
     void noteRx(CanBusId id, const CanFrame &frame)
     {
         totalRxFrames++;
-        CanBusRuntime &target = bus(id);
-        target.online = true;
-        target.rxFrames++;
-        target.lastId = frame.id;
-        target.lastDlc = frame.dlc <= 8 ? frame.dlc : 8;
-        memset(target.lastData, 0, sizeof(target.lastData));
-        memcpy(target.lastData, frame.data, target.lastDlc);
-        target.lastSeenMs = millis();
+        CanBusRuntime &targetBusRuntime = bus(id);
+        targetBusRuntime.online = true;
+        targetBusRuntime.rxFrames++;
+        targetBusRuntime.lastId = frame.id;
+        targetBusRuntime.lastDlc = frame.dlc <= 8 ? frame.dlc : 8;
+        memset(targetBusRuntime.lastData, 0, sizeof(targetBusRuntime.lastData));
+        memcpy(targetBusRuntime.lastData, frame.data, targetBusRuntime.lastDlc);
+        targetBusRuntime.lastSeenMs = millis();
     }
 
     // 记录一帧主动发送出去的数据。
@@ -99,13 +130,13 @@ struct DualCanRuntime
     void noteTx(CanBusId id, const CanFrame &frame)
     {
         totalTxFrames++;
-        CanBusRuntime &target = bus(id);
-        target.online = true;
-        target.txFrames++;
-        target.lastInjectedMs = millis();
-        target.lastId = frame.id;
-        target.lastDlc = frame.dlc <= 8 ? frame.dlc : 8;
-        memset(target.lastData, 0, sizeof(target.lastData));
-        memcpy(target.lastData, frame.data, target.lastDlc);
+        CanBusRuntime &targetBusRuntime = bus(id);
+        targetBusRuntime.online = true;
+        targetBusRuntime.txFrames++;
+        targetBusRuntime.lastInjectedMs = millis();
+        targetBusRuntime.lastId = frame.id;
+        targetBusRuntime.lastDlc = frame.dlc <= 8 ? frame.dlc : 8;
+        memset(targetBusRuntime.lastData, 0, sizeof(targetBusRuntime.lastData));
+        memcpy(targetBusRuntime.lastData, frame.data, targetBusRuntime.lastDlc);
     }
 };

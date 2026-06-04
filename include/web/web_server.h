@@ -12,31 +12,28 @@
 
 namespace
 {
+// Web 控制面内部单例资源。
+// 这些对象全部限制在当前头文件匿名命名空间内，避免和其他模块暴露耦合。
 static WebServer server(80);
 static DNSServer dnsServer;
 static Preferences prefs;
+
+// 当前挂接到 Web 控制面的业务处理器。
 static CarManagerBase *webHandler = nullptr;
+
+// 当前挂接到 Web 控制面的双 CAN 运行态。
 static DualCanRuntime *webRuntime = nullptr;
+
+// 是否允许串口继续输出原始 CAN 帧。
 static bool serialPrintEnabled = true;
+
+// Web 控制面是否已经完成初始化。
 static bool webReady = false;
 
 // 把布尔值格式化成 JSON 字面量。
 String boolJson(bool value)
 {
     return value ? "true" : "false";
-}
-
-// 把单条总线运行态序列化成 JSON 片段。
-String busJson(const CanBusRuntime &bus)
-{
-    String out = "{";
-    out += "\"online\":" + boolJson(bus.online);
-    out += ",\"rx\":" + String(bus.rxFrames);
-    out += ",\"tx\":" + String(bus.txFrames);
-    out += ",\"last_id\":" + String(bus.lastId);
-    out += ",\"last_dlc\":" + String(bus.lastDlc);
-    out += "}";
-    return out;
 }
 
 // 把最近一帧的 data 区转换成十六进制字符串，供页面直接展示。
@@ -55,6 +52,23 @@ String dataHex(const uint8_t *data, uint8_t dlc)
     return out;
 }
 
+// 把单条总线运行态序列化成 JSON 片段。
+String busJson(const CanBusRuntime &bus)
+{
+    String out = "{";
+    out += "\"name\":\"" + String(bus.name ? bus.name : "UNKNOWN") + "\"";
+    out += ",\"online\":" + boolJson(bus.online);
+    out += ",\"rx\":" + String(bus.rxFrames);
+    out += ",\"tx\":" + String(bus.txFrames);
+    out += ",\"last_id\":" + String(bus.lastId);
+    out += ",\"last_dlc\":" + String(bus.lastDlc);
+    out += ",\"last_data\":\"" + dataHex(bus.lastData, bus.lastDlc) + "\"";
+    out += ",\"last_seen_ms\":" + String(bus.lastSeenMs);
+    out += ",\"last_injected_ms\":" + String(bus.lastInjectedMs);
+    out += "}";
+    return out;
+}
+
 // 生成 Web 页面轮询使用的状态快照。
 // 这里把业务状态、双 CAN 统计、最后一帧和日志缓冲压成一个 JSON 文档。
 String buildStatusJson()
@@ -69,12 +83,19 @@ String buildStatusJson()
         out += ",\"speed_profile_name\":\"" + String(webHandler->speedProfileName()) + "\"";
         out += ",\"speed_offset\":" + String(webHandler->speedOffset);
         out += ",\"control_bus\":\"" + String(webHandler->controlBusName()) + "\"";
+        out += ",\"frame_count\":" + String(webHandler->frameCount);
+        out += ",\"sent_count\":" + String(webHandler->sentCount);
         out += ",\"precond_req\":" + boolJson(webHandler->precondRequested);
+        out += ",\"precond_active\":" + boolJson(webHandler->precondActive);
+        out += ",\"precond_allowed\":" + boolJson(webHandler->precondAllowed);
+        out += ",\"precond_worth\":" + boolJson(webHandler->precondWorthwhile);
         out += ",\"em_detect\":" + boolJson(webHandler->emergencyDetect);
         out += ",\"isa_ovr\":" + boolJson(webHandler->isaSpeedOverride);
         out += ",\"isa_sup\":" + boolJson(webHandler->isaSuppress);
         out += ",\"isa_mul\":" + String(webHandler->isaSpeedMul);
         out += ",\"enable_print\":" + boolJson(serialPrintEnabled);
+        out += ",\"can_tx_enabled\":" + boolJson(isCanTxEnabled());
+        out += ",\"can_tx_mode\":\"" + String(isCanTxEnabled() ? "NORMAL" : "LISTEN_ONLY") + "\"";
         out += ",\"battery\":{";
         out += "\"soc\":" + String(webHandler->socPercent, 1);
         out += ",\"voltage\":" + String(webHandler->packVoltage, 1);
@@ -83,14 +104,11 @@ String buildStatusJson()
         out += ",\"temp_min\":" + String(webHandler->packTempMin, 1);
         out += ",\"temp_max\":" + String(webHandler->packTempMax, 1);
         out += ",\"wh_per_km\":" + String(webHandler->whPerKm, 1);
-        out += ",\"precond\":" + boolJson(webHandler->precondActive);
-        out += ",\"precond_allowed\":" + boolJson(webHandler->precondAllowed);
-        out += ",\"precond_worth\":" + boolJson(webHandler->precondWorthwhile);
         out += "}";
     }
     else
     {
-        out += "\"fsd_enabled\":false,\"force_fsd\":false,\"speed_profile\":0,\"speed_profile_name\":\"Unknown\",\"speed_offset\":0,\"control_bus\":\"UNKNOWN\",\"precond_req\":false,\"em_detect\":true,\"isa_ovr\":true,\"isa_sup\":false,\"isa_mul\":7,\"enable_print\":true,\"battery\":{\"soc\":0,\"voltage\":0,\"current\":0,\"power_kw\":0,\"temp_min\":0,\"temp_max\":0,\"wh_per_km\":0,\"precond\":false,\"precond_allowed\":false,\"precond_worth\":false}";
+        out += "\"fsd_enabled\":false,\"force_fsd\":false,\"speed_profile\":0,\"speed_profile_name\":\"Unknown\",\"speed_offset\":0,\"control_bus\":\"UNKNOWN\",\"frame_count\":0,\"sent_count\":0,\"precond_req\":false,\"precond_active\":false,\"precond_allowed\":false,\"precond_worth\":false,\"em_detect\":true,\"isa_ovr\":true,\"isa_sup\":false,\"isa_mul\":7,\"enable_print\":true,\"can_tx_enabled\":false,\"can_tx_mode\":\"LISTEN_ONLY\",\"battery\":{\"soc\":0,\"voltage\":0,\"current\":0,\"power_kw\":0,\"temp_min\":0,\"temp_max\":0,\"wh_per_km\":0}";
     }
 
     out += ",\"uptime_s\":" + String(millis() / 1000UL);
@@ -114,7 +132,7 @@ String buildStatusJson()
     }
     else
     {
-        out += ",\"can\":{\"total_rx\":0,\"total_tx\":0,\"a\":{\"online\":false,\"rx\":0,\"tx\":0,\"last_id\":0,\"last_dlc\":0},\"b\":{\"online\":false,\"rx\":0,\"tx\":0,\"last_id\":0,\"last_dlc\":0}}";
+        out += ",\"can\":{\"total_rx\":0,\"total_tx\":0,\"a\":{\"name\":\"CAN_A\",\"online\":false,\"rx\":0,\"tx\":0,\"last_id\":0,\"last_dlc\":0,\"last_data\":\"\",\"last_seen_ms\":0,\"last_injected_ms\":0},\"b\":{\"name\":\"CAN_B\",\"online\":false,\"rx\":0,\"tx\":0,\"last_id\":0,\"last_dlc\":0,\"last_data\":\"\",\"last_seen_ms\":0,\"last_injected_ms\":0}}";
         out += ",\"last_frame\":{\"bus\":\"UNKNOWN\",\"id\":0,\"dlc\":0,\"data\":\"\"}";
     }
 
@@ -144,6 +162,8 @@ void applySavedPreferences()
     webHandler->setIsaSuppress(prefs.getBool("isaSup", false));
     webHandler->setIsaMultiplier(prefs.getUChar("isaMul", 7));
     serialPrintEnabled = prefs.getBool("print", true);
+    setCanTxEnabled(false);
+    prefs.putBool("canTx", false);
 }
 
 // 统一返回一个最小成功响应，供开关类接口复用。
@@ -247,6 +267,14 @@ void bindRoutes()
         serialPrintEnabled = parseBodyFlag();
         prefs.putBool("print", serialPrintEnabled);
         globalLog.add(serialPrintEnabled ? "Serial frame log enabled" : "Serial frame log disabled");
+        respondOk();
+    });
+
+    server.on("/api/can-tx", HTTP_POST, []() {
+        const bool value = parseBodyFlag();
+        setCanTxEnabled(value);
+        prefs.putBool("canTx", value);
+        globalLog.add(value ? "CAN TX enabled: bus mode switched to normal" : "CAN TX disabled: bus mode switched to listen-only");
         respondOk();
     });
 

@@ -20,23 +20,23 @@ public:
                const char *fwVersion,
                const char *manufacturer)
     {
-        if (ready_)
+        if (serviceReady_)
             return;
 
         deviceName_ = deviceName ? deviceName : "TeslaCAN-BLEOTA";
 
         BLEDevice::init(deviceName_);
-        server_ = BLEDevice::createServer();
-        server_->setCallbacks(new ServerCallbacks(this));
+        bleServer_ = BLEDevice::createServer();
+        bleServer_->setCallbacks(new ServerCallbacks(this));
 
-        ota_.begin(server_);
-        ota_.setModel(model ? model : "TeslaCAN Dual CAN");
-        ota_.setFWVersion(fwVersion ? fwVersion : "dev");
-        ota_.setManufactuer(manufacturer ? manufacturer : "csk");
-        ota_.init();
+        otaService_.begin(bleServer_);
+        otaService_.setModel(model ? model : "TeslaCAN Dual CAN");
+        otaService_.setFWVersion(fwVersion ? fwVersion : "dev");
+        otaService_.setManufactuer(manufacturer ? manufacturer : "csk");
+        otaService_.init();
 
         restartAdvertising();
-        ready_ = true;
+        serviceReady_ = true;
 
         globalLog.add("BLE OTA ready");
         Serial.printf("BLE OTA started: %s\n", deviceName_);
@@ -47,30 +47,30 @@ public:
     // 这里同时负责处理断连后的重新广播，让 OTA 服务可以长期驻留在后台可用。
     void loop()
     {
-        if (!ready_)
+        if (!serviceReady_)
             return;
 
-        if (!connected_ && wasConnected_)
+        if (!clientConnected_ && wasClientConnected_)
         {
             delay(200);
             restartAdvertising();
             globalLog.add("BLE OTA advertising restarted");
         }
 
-        wasConnected_ = connected_;
-        ota_.process();
+        wasClientConnected_ = clientConnected_;
+        otaService_.process();
     }
 
     // 返回 BLE OTA 服务是否已经初始化完成。
     bool ready() const
     {
-        return ready_;
+        return serviceReady_;
     }
 
     // 返回当前是否有 BLE OTA 客户端已连接。
     bool connected() const
     {
-        return connected_;
+        return clientConnected_;
     }
 
     // 返回当前广播设备名，供页面或日志输出使用。
@@ -95,7 +95,7 @@ private:
             (void)server;
             if (!owner_)
                 return;
-            owner_->connected_ = true;
+            owner_->clientConnected_ = true;
             globalLog.add("BLE OTA client connected");
         }
 
@@ -104,11 +104,12 @@ private:
             (void)server;
             if (!owner_)
                 return;
-            owner_->connected_ = false;
+            owner_->clientConnected_ = false;
             globalLog.add("BLE OTA client disconnected");
         }
 
     private:
+        // 反向指向外层服务对象，用于回写连接状态。
         BleOtaService *owner_ = nullptr;
     };
 
@@ -121,17 +122,28 @@ private:
             return;
 
         advertising->stop();
-        advertising->addServiceUUID(ota_.getBLEOTAuuid());
+        advertising->addServiceUUID(otaService_.getBLEOTAuuid());
         advertising->setScanResponse(false);
         advertising->setMinPreferred(0x06);
         advertising->setMinPreferred(0x12);
         BLEDevice::startAdvertising();
     }
 
-    BLEOTAClass ota_;
-    BLEServer *server_ = nullptr;
+    // 第三方 BLE OTA 服务对象。
+    BLEOTAClass otaService_;
+
+    // BLE GATT 服务器实例。
+    BLEServer *bleServer_ = nullptr;
+
+    // 当前对外广播的设备名称。
     const char *deviceName_ = "TeslaCAN-BLEOTA";
-    bool ready_ = false;
-    bool connected_ = false;
-    bool wasConnected_ = false;
+
+    // 服务是否已经初始化完成。
+    bool serviceReady_ = false;
+
+    // 当前是否有客户端保持连接。
+    bool clientConnected_ = false;
+
+    // 上一轮循环是否处于已连接状态，用于检测断连边沿。
+    bool wasClientConnected_ = false;
 };

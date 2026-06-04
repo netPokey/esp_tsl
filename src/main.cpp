@@ -13,23 +13,44 @@
 #include "uart_bridge.h"
 #include "web/web_server.h"
 
+//首先在测试台上以只听模式运行固件（禁用 TX）。切勿将未经测试台验证的更改推送至汽车总线。
+
+
 namespace
 {
 // 统一描述一条总线端点。
 // 作用：把“总线 ID / 显示名称 / 驱动实例”绑定在一起，便于主循环做统一调度。
 struct CanEndpoint
 {
+    // 这条端点对应的逻辑总线编号。
     CanBusId busId = CanBusId::Unknown;
+
+    // 展示层使用的固定总线名称。
     const char *name = "UNKNOWN";
+
+    // 该端点背后的实际驱动实例。
     CanDriver *driver = nullptr;
 };
 
+// 外接 MCP2515 驱动实例。
 std::unique_ptr<MCP2515Driver> canADriver;
+
+// ESP32 内建 TWAI 驱动实例。
 std::unique_ptr<TWAIDriver> canBDriver;
+
+// 当前车辆业务处理器。
 std::unique_ptr<HW4DualCanHandler> vehicleHandler;
+
+// 显示输出层。
 LCDDisplay lcd;
+
+// 双 CAN 共享运行态。
 DualCanRuntime runtimeState;
+
+// 串口控制桥。
 UartBridge uartBridge;
+
+// BLE OTA 服务。
 BleOtaService bleOta;
 
 // 构造 CAN_A 端点视图。
@@ -189,6 +210,18 @@ void runVehicleBackgroundTasks()
     vehicleHandler->runPeriodicTasks(controlBus, driverForBus(controlBus), runtimeState);
 }
 
+// 在运行时把共享 TX 总开关同步到两条总线驱动模式。
+// 默认策略是上电只听；只有总开关明确打开时，驱动才切到 Normal 允许实际发送。
+void syncCanTxMode()
+{
+    const CanBusMode targetMode = shouldAllowCanTx() ? CanBusMode::Normal : CanBusMode::ListenOnly;
+
+    if (canADriver)
+        canADriver->setBusMode(targetMode);
+    if (canBDriver)
+        canBDriver->setBusMode(targetMode);
+}
+
 // 推进所有非 CAN 输出层。
 // 包括显示、WiFi 页面、串口桥和 BLE OTA 状态机。
 void updateOutputs()
@@ -235,10 +268,12 @@ void setup()
     digitalWrite(PIN_LED, HIGH);
 
     logBootBanner();
+    setCanTxEnabled(false);
     initRuntimeModules();
 
     const bool canAOk = initCanA();
     const bool canBOk = initCanB();
+    syncCanTxMode();
     attachFilters();
 
     if (canAOk && canBOk)
@@ -255,6 +290,7 @@ void setup()
 // 执行顺序：双 CAN 收包 → 后台业务注入 → 输出层刷新。
 void loop()
 {
+    syncCanTxMode();
     processBusTraffic(makeCanAEndpoint());
     processBusTraffic(makeCanBEndpoint());
     runVehicleBackgroundTasks();

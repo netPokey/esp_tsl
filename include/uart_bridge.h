@@ -47,15 +47,31 @@ public:
     }
 
 private:
+    // 串口桥内部使用的 UART1 端口。
     HardwareSerial port_{1};
+
+    // 当前绑定的业务处理器。
     CarManagerBase *handler_ = nullptr;
+
+    // 当前绑定的双 CAN 运行态。
     DualCanRuntime *runtime_ = nullptr;
 
+    // 一行命令接收缓冲区。
     char rxBuffer_[128] = {};
+
+    // 当前已写入接收缓冲的长度。
     size_t rxLength_ = 0;
+
+    // 上次推流状态的发送时间戳。
     unsigned long lastEmitMs_ = 0;
+
+    // 已经镜像到串口侧的日志数量。
     int mirroredLogCount_ = 0;
+
+    // 是否启用周期状态推流。
     bool streamEnabled_ = false;
+
+    // 是否启用日志增量镜像。
     bool logMirrorEnabled_ = false;
 
     // 按行读取串口输入。

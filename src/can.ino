@@ -12,10 +12,15 @@
 #include "drivers/mcp2515_driver.h"
 #include "drivers/twai_driver.h"
 
+// 参考发包间隔。
+// 这个文件仅作为双 CAN 最小链路验证，不参与正式业务逻辑。
 static constexpr uint32_t kSendIntervalMs = 3000;
+
+// 参考报文固定载荷长度。
 static constexpr uint8_t kFrameDataSize = 8;
 
-static MCP2515Driver Can_A(
+// CAN_A 参考驱动实例，对应外接 MCP2515。
+static MCP2515Driver canADemoDriver(
     MCP2515_CS,
     MCP2515_RST,
     MCP2515_SCLK,
@@ -24,14 +29,21 @@ static MCP2515Driver Can_A(
     &SPI,
     10000000);
 
-static TWAIDriver Can_B(
+// CAN_B 参考驱动实例，对应 ESP32 内建 TWAI。
+static TWAIDriver canBDemoDriver(
     static_cast<gpio_num_t>(CAN_TX),
     static_cast<gpio_num_t>(CAN_RX));
 
-static uint32_t cycleTime = 0;
-static bool canABSendFlag = true;
+// 下一次允许发送参考报文的时间点。
+static uint32_t nextSendAtMs = 0;
 
+// 轮流在 CAN_A 和 CAN_B 之间切换发送目标。
+static bool sendOnCanANext = true;
+
+// 发往 CAN_A 的参考载荷。
 static const uint8_t kCanATxData[kFrameDataSize] = {8, 7, 6, 5, 4, 3, 2, 1};
+
+// 发往 CAN_B 的参考载荷。
 static const uint8_t kCanBTxData[kFrameDataSize] = {1, 2, 3, 4, 5, 6, 7, 8};
 
 // 构造一帧最小 CAN 示例报文。
@@ -62,9 +74,9 @@ void printFrame(const char *label, const CanFrame &frame)
     Serial.printf("\n%s received data\n", label);
     Serial.printf("%s receive id: 0x%X\n", label, frame.id);
     Serial.printf("%s receive data length: %d\n", label, frame.dlc);
-    for (uint8_t i = 0; i < frame.dlc; ++i)
+    for (uint8_t index = 0; index < frame.dlc; ++index)
     {
-        Serial.printf("%s receive data [%d]: %d\n", label, i, frame.data[i]);
+        Serial.printf("%s receive data [%d]: %d\n", label, index, frame.data[index]);
     }
     Serial.println();
 }
@@ -95,27 +107,27 @@ void canLegacyDemoSetup()
     Serial.begin(115200);
     Serial.println("Ciallo");
 
-    initBus(Can_A, "can a");
-    initBus(Can_B, "can b");
+    initBus(canADemoDriver, "can a");
+    initBus(canBDemoDriver, "can b");
 }
 
 void canLegacyDemoLoop()
 {
-    drainBus(Can_A, "can a");
-    drainBus(Can_B, "can b");
+    drainBus(canADemoDriver, "can a");
+    drainBus(canBDemoDriver, "can b");
 
-    if (millis() > cycleTime)
+    if (millis() > nextSendAtMs)
     {
-        if (canABSendFlag)
+        if (sendOnCanANext)
         {
-            sendFrame(Can_A, "can a", makeFrame(0xAA, kCanATxData, kFrameDataSize));
+            sendFrame(canADemoDriver, "can a", makeFrame(0xAA, kCanATxData, kFrameDataSize));
         }
         else
         {
-            sendFrame(Can_B, "can b", makeFrame(0xBB, kCanBTxData, kFrameDataSize));
+            sendFrame(canBDemoDriver, "can b", makeFrame(0xBB, kCanBTxData, kFrameDataSize));
         }
 
-        canABSendFlag = !canABSendFlag;
-        cycleTime = millis() + kSendIntervalMs;
+        sendOnCanANext = !sendOnCanANext;
+        nextSendAtMs = millis() + kSendIntervalMs;
     }
 }

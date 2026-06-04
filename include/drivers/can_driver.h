@@ -1,6 +1,14 @@
 #pragma once
 #include "../can_frame_types.h"
 
+// 总线工作模式。
+// 正常模式允许收发，只听模式只接收不主动驱动 TX。
+enum class CanBusMode : uint8_t
+{
+    Normal,
+    ListenOnly,
+};
+
 // CAN 驱动统一抽象层。
 // 上层逻辑只依赖这组能力，不关心底层是 MCP2515 还是 ESP32 内建 TWAI。
 class CanDriver
@@ -14,7 +22,11 @@ public:
 
     // 按一组目标 ID 配置硬件过滤器。
     // 调用方给的是关注 ID 集，驱动负责尽量把它收敛成底层控制器支持的过滤规则。
-    virtual void setFilters(const uint32_t *ids, uint8_t count) = 0;
+    virtual void setFilters(const uint32_t *trackedIds, uint8_t trackedIdCount) = 0;
+
+    // 切换总线工作模式。
+    // ListenOnly 用于测试台只听，Normal 才允许真正驱动 TX。
+    virtual bool setBusMode(CanBusMode mode) = 0;
 
     // 尝试启用中断式收包。
     // 当前两个驱动都没有真正启用该能力，因此这里保留为统一接口。
