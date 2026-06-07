@@ -41,6 +41,19 @@ public:
         if (!driverReady_)
             return;
 
+        if (trackedIdCount == 0 || !trackedIds)
+        {
+            filterConfig_ = TWAI_FILTER_CONFIG_ACCEPT_ALL();
+            twai_stop();
+            twai_driver_uninstall();
+            if (twai_driver_install(&generalConfig_, &timingConfig_, &filterConfig_) != ESP_OK ||
+                twai_start() != ESP_OK)
+            {
+                driverReady_ = false;
+            }
+            return;
+        }
+
         uint32_t differingBits = 0;
         for (uint8_t index = 1; index < trackedIdCount; index++)
         {

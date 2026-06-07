@@ -33,6 +33,18 @@ inline const char *canBusName(CanBusId bus)
     }
 }
 
+// 单条 CAN 抓包记录。
+// 固定字段、固定数据长度，避免抓包功能把内存或 JSON 输出撑爆。
+struct CanCaptureEntry
+{
+    uint32_t sequence = 0;
+    CanBusId bus = CanBusId::Unknown;
+    unsigned long timestampMs = 0;
+    uint32_t id = 0;
+    uint8_t dlc = 0;
+    uint8_t data[8] = {};
+};
+
 // 单条总线的实时运行态。
 // 这里不做业务解析，只存最通用的收发统计和最近一帧快照。
 struct CanBusRuntime
@@ -77,6 +89,25 @@ struct DualCanRuntime
 
     // 全局累计发送帧数。
     uint32_t totalTxFrames = 0;
+
+    // CAN 抓包缓冲容量。
+    // Web 页面只读取最近这部分，防止长时间运行后响应体无限增长。
+    static constexpr uint16_t kCaptureCapacity = 200;
+
+    // 当前是否写入 CAN 抓包缓冲。
+    bool captureEnabled = false;
+
+    // 抓包序号，单调递增，前端可用来判断是否有新帧。
+    uint32_t captureSequence = 0;
+
+    // 抓包环形缓冲当前写入位置。
+    uint16_t captureWriteIndex = 0;
+
+    // 抓包环形缓冲当前有效条数。
+    uint16_t captureCount = 0;
+
+    // 最近接收的 CAN 帧快照。
+    CanCaptureEntry capture[kCaptureCapacity];
 
     // 外接 MCP2515 总线运行态。
     CanBusRuntime busA;
@@ -123,6 +154,21 @@ struct DualCanRuntime
         memset(targetBusRuntime.lastData, 0, sizeof(targetBusRuntime.lastData));
         memcpy(targetBusRuntime.lastData, frame.data, targetBusRuntime.lastDlc);
         targetBusRuntime.lastSeenMs = millis();
+
+        if (!captureEnabled)
+            return;
+
+        CanCaptureEntry &entry = capture[captureWriteIndex];
+        entry.sequence = ++captureSequence;
+        entry.bus = id;
+        entry.timestampMs = targetBusRuntime.lastSeenMs;
+        entry.id = frame.id;
+        entry.dlc = targetBusRuntime.lastDlc;
+        memset(entry.data, 0, sizeof(entry.data));
+        memcpy(entry.data, frame.data, entry.dlc);
+        captureWriteIndex = static_cast<uint16_t>((captureWriteIndex + 1) % kCaptureCapacity);
+        if (captureCount < kCaptureCapacity)
+            captureCount++;
     }
 
     // 记录一帧主动发送出去的数据。

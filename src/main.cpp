@@ -130,19 +130,34 @@ bool initCanB()
 }
 
 // 把业务层关注的过滤 ID 同步给两条总线。
-// 目标：让总线层尽早裁掉无关流量，降低解析层的干扰和压力。
+// 抓包关闭时裁掉无关流量；抓包开启时接收全量，再交给页面筛选。
 void attachFilters()
 {
-    if (!vehicleHandler)
-        return;
-
-    const uint32_t *ids = vehicleHandler->filterIds();
-    const uint8_t count = vehicleHandler->filterIdCount();
+    const uint32_t *ids = nullptr;
+    uint8_t count = 0;
+    if (!runtimeState.captureEnabled && vehicleHandler)
+    {
+        ids = vehicleHandler->filterIds();
+        count = vehicleHandler->filterIdCount();
+    }
 
     if (canADriver)
         canADriver->setFilters(ids, count);
     if (canBDriver)
         canBDriver->setFilters(ids, count);
+}
+
+// 抓包开关变化后同步 CAN RX 硬件过滤策略。
+void syncCanRxFilterMode()
+{
+    static bool initialized = false;
+    static bool lastCaptureEnabled = false;
+    if (initialized && lastCaptureEnabled == runtimeState.captureEnabled)
+        return;
+
+    attachFilters();
+    lastCaptureEnabled = runtimeState.captureEnabled;
+    initialized = true;
 }
 
 // 按总线 ID 找到对应驱动。
@@ -298,6 +313,7 @@ void loop()
     }
 
     syncCanTxMode();
+    syncCanRxFilterMode();
     processBusTraffic(makeCanAEndpoint());
     processBusTraffic(makeCanBEndpoint());
     runVehicleBackgroundTasks();

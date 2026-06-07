@@ -4,23 +4,16 @@
 #include "pin_config.h"
 
 #if !defined(T_2Can) || defined(T_2Can_Fd)
-#error "src/can.ino is wrapped for MCP2515 Can_A + TWAI Can_B only"
+#error "src/can.ino is for MCP2515 CAN_A + TWAI CAN_B only"
 #endif
 
 #include "can_frame_types.h"
+#include "can_helpers.h"
 #include "drivers/can_driver.h"
 #include "drivers/mcp2515_driver.h"
 #include "drivers/twai_driver.h"
 
-// 参考发包间隔。
-// 这个文件仅作为双 CAN 最小链路验证，不参与正式业务逻辑。
-static constexpr uint32_t kSendIntervalMs = 3000;
-
-// 参考报文固定载荷长度。
-static constexpr uint8_t kFrameDataSize = 8;
-
-// CAN_A 参考驱动实例，对应外接 MCP2515。
-static MCP2515Driver canADemoDriver(
+static MCP2515Driver canADriver(
     MCP2515_CS,
     MCP2515_RST,
     MCP2515_SCLK,
@@ -29,105 +22,98 @@ static MCP2515Driver canADemoDriver(
     &SPI,
     10000000);
 
-// CAN_B 参考驱动实例，对应 ESP32 内建 TWAI。
-static TWAIDriver canBDemoDriver(
+static TWAIDriver canBDriver(
     static_cast<gpio_num_t>(CAN_TX),
     static_cast<gpio_num_t>(CAN_RX));
 
-// 下一次允许发送参考报文的时间点。
-static uint32_t nextSendAtMs = 0;
+static uint32_t lastHeartbeatAtMs = 0;
+static uint32_t canAReceived = 0;
+static uint32_t canBReceived = 0;
+static bool canAReady = false;
+static bool canBReady = false;
 
-// 轮流在 CAN_A 和 CAN_B 之间切换发送目标。
-static bool sendOnCanANext = true;
-
-// 发往 CAN_A 的参考载荷。
-static const uint8_t kCanATxData[kFrameDataSize] = {8, 7, 6, 5, 4, 3, 2, 1};
-
-// 发往 CAN_B 的参考载荷。
-static const uint8_t kCanBTxData[kFrameDataSize] = {1, 2, 3, 4, 5, 6, 7, 8};
-
-// 构造一帧最小 CAN 示例报文。
-CanFrame makeFrame(uint32_t id, const uint8_t *data, uint8_t dlc)
+void printFrame(const char *label, const CanFrame &frame, uint32_t count)
 {
-    CanFrame frame{};
-    frame.id = id;
-    frame.dlc = (dlc <= kFrameDataSize) ? dlc : kFrameDataSize;
-    memcpy(frame.data, data, frame.dlc);
-    return frame;
-}
-
-// 初始化单条参考总线，并在串口输出初始化结果。
-bool initBus(CanDriver &driver, const char *label)
-{
-    if (!driver.init())
+    Serial.printf("RX %-5s #%lu id=0x%03lX dlc=%u data=",
+                  label,
+                  static_cast<unsigned long>(count),
+                  static_cast<unsigned long>(frame.id),
+                  frame.dlc);
+    for (uint8_t i = 0; i < frame.dlc && i < 8; ++i)
     {
-        Serial.printf("%s: init fail\n", label);
-        return false;
-    }
-    Serial.printf("%s: init success, speed 500kbps\n", label);
-    return true;
-}
-
-// 把接收到的一帧参考报文展开打印到串口。
-void printFrame(const char *label, const CanFrame &frame)
-{
-    Serial.printf("\n%s received data\n", label);
-    Serial.printf("%s receive id: 0x%X\n", label, frame.id);
-    Serial.printf("%s receive data length: %d\n", label, frame.dlc);
-    for (uint8_t index = 0; index < frame.dlc; ++index)
-    {
-        Serial.printf("%s receive data [%d]: %d\n", label, index, frame.data[index]);
+        if (frame.data[i] < 16)
+            Serial.print('0');
+        Serial.print(frame.data[i], HEX);
+        if (i + 1 < frame.dlc)
+            Serial.print(' ');
     }
     Serial.println();
 }
 
-// 持续读空某条总线上的参考流量。
-void drainBus(CanDriver &driver, const char *label)
+void drainBus(CanDriver &driver, const char *label, uint32_t &count)
 {
     CanFrame frame;
     while (driver.read(frame))
     {
-        printFrame(label, frame);
-        delay(10);
+        ++count;
+        printFrame(label, frame, count);
     }
 }
 
-// 发送一帧参考测试报文。
-void sendFrame(CanDriver &driver, const char *label, const CanFrame &frame)
+bool initBus(CanDriver &driver, const char *label)
 {
-    Serial.printf("%s: send data\n", label);
-    driver.send(frame);
+    if (!driver.init())
+    {
+        Serial.printf("%s init fail\n", label);
+        return false;
+    }
+
+    driver.setBusMode(CanBusMode::Normal);
+    driver.setFilters(nullptr, 0);
+    Serial.printf("%s init ok: receive only app, normal mode ACK, accept all, 500kbps\n", label);
+    return true;
 }
 
-// 这个文件保留为最小双 CAN 收发参考，不再作为固件主入口。
-// 当前正式运行链路统一收口在 src/main.cpp，避免出现两套 setup/loop 并存。
-// 保留这组参考函数的目的，是方便后续核对底层驱动、波特率和最小发收路径。
-void canLegacyDemoSetup()
+void printHeartbeat()
+{
+    const uint32_t now = millis();
+    if (now - lastHeartbeatAtMs < 3000)
+        return;
+    lastHeartbeatAtMs = now;
+
+    const TWAIDriver::DiagInfo diag = canBDriver.getDiagnostics();
+    Serial.printf("WAIT rx CAN_A=%lu CAN_B=%lu | CAN_B state=%s rx_err=%lu tx_err=%lu bus_err=%lu missed=%lu\n",
+                  static_cast<unsigned long>(canAReceived),
+                  static_cast<unsigned long>(canBReceived),
+                  diag.state,
+                  static_cast<unsigned long>(diag.rxErrors),
+                  static_cast<unsigned long>(diag.txErrors),
+                  static_cast<unsigned long>(diag.busErrors),
+                  static_cast<unsigned long>(diag.rxMissed));
+}
+
+void setup()
 {
     Serial.begin(115200);
-    Serial.println("Ciallo");
+    delay(1000);
+    Serial.println();
+    Serial.println("Dual CAN receive-only test starting");
+    Serial.printf("CAN_A MCP2515 pins cs=%d rst=%d sck=%d miso=%d mosi=%d\n", MCP2515_CS, MCP2515_RST, MCP2515_SCLK, MCP2515_MISO, MCP2515_MOSI);
+    Serial.printf("CAN_B TWAI pins tx=%d rx=%d\n", CAN_TX, CAN_RX);
 
-    initBus(canADemoDriver, "can a");
-    initBus(canBDemoDriver, "can b");
+    setCanTxEnabled(false);
+    canAReady = initBus(canADriver, "CAN_A");
+    canBReady = initBus(canBDriver, "CAN_B");
+
+    Serial.println("No CAN frames will be sent by this firmware. Incoming standard frames are printed from both buses.");
 }
 
-void canLegacyDemoLoop()
+void loop()
 {
-    drainBus(canADemoDriver, "can a");
-    drainBus(canBDemoDriver, "can b");
-
-    if (millis() > nextSendAtMs)
-    {
-        if (sendOnCanANext)
-        {
-            sendFrame(canADemoDriver, "can a", makeFrame(0xAA, kCanATxData, kFrameDataSize));
-        }
-        else
-        {
-            sendFrame(canBDemoDriver, "can b", makeFrame(0xBB, kCanBTxData, kFrameDataSize));
-        }
-
-        sendOnCanANext = !sendOnCanANext;
-        nextSendAtMs = millis() + kSendIntervalMs;
-    }
+    if (canAReady)
+        drainBus(canADriver, "CAN_A", canAReceived);
+    if (canBReady)
+        drainBus(canBDriver, "CAN_B", canBReceived);
+    printHeartbeat();
+    delay(2);
 }

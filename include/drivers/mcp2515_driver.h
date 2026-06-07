@@ -64,7 +64,7 @@ public:
 
         uint32_t filterBaseId = 0;
         uint32_t filterMask = 0;
-        if (trackedIdCount > 0)
+        if (trackedIdCount > 0 && trackedIds)
         {
             uint32_t differingBits = 0;
             for (uint8_t index = 1; index < trackedIdCount; ++index)

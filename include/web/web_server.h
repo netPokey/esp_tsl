@@ -4,6 +4,7 @@
 #include <Preferences.h>
 #include <WebServer.h>
 #include <WiFi.h>
+#include <esp_sleep.h>
 
 #include "../handlers.h"
 #include "../log_buffer.h"
@@ -81,6 +82,79 @@ String busJson(const CanBusRuntime &bus)
     return out;
 }
 
+// 解析报文 ID 过滤输入，支持十进制或 0x 前缀十六进制。
+bool parseCanIdFilter(uint32_t &filterId)
+{
+    if (!server.hasArg("id"))
+        return false;
+
+    String value = server.arg("id");
+    value.trim();
+    if (value.length() == 0)
+        return false;
+
+    const char *raw = value.c_str();
+    char *end = nullptr;
+    filterId = strtoul(raw, &end, 0);
+    return end != raw;
+}
+
+// 生成受限长度的 CAN 抓包 JSON。
+String buildCanCaptureJson()
+{
+    String out = "{";
+    out.reserve(8192);
+
+    if (!webRuntime)
+    {
+        out += "\"enabled\":false,\"sequence\":0,\"capacity\":0,\"count\":0,\"frames\":[]}";
+        return out;
+    }
+
+    uint32_t filterId = 0;
+    const bool hasFilter = parseCanIdFilter(filterId);
+    const uint32_t since = server.hasArg("since") ? strtoul(server.arg("since").c_str(), nullptr, 10) : 0;
+    int limit = server.hasArg("limit") ? server.arg("limit").toInt() : 64;
+    if (limit < 1)
+        limit = 1;
+    if (limit > DualCanRuntime::kCaptureCapacity)
+        limit = DualCanRuntime::kCaptureCapacity;
+
+    out += "\"enabled\":" + boolJson(webRuntime->captureEnabled);
+    out += ",\"sequence\":" + String(webRuntime->captureSequence);
+    out += ",\"capacity\":" + String(DualCanRuntime::kCaptureCapacity);
+    out += ",\"count\":" + String(webRuntime->captureCount);
+    out += ",\"filtered\":" + boolJson(hasFilter);
+    out += ",\"filter_id\":" + String(hasFilter ? filterId : 0);
+    out += ",\"since\":" + String(since);
+    out += ",\"frames\":[";
+
+    int emitted = 0;
+    const uint16_t count = webRuntime->captureCount;
+    for (uint16_t offset = 0; offset < count && emitted < limit; ++offset)
+    {
+        const uint16_t index = static_cast<uint16_t>((webRuntime->captureWriteIndex + DualCanRuntime::kCaptureCapacity - 1 - offset) % DualCanRuntime::kCaptureCapacity);
+        const CanCaptureEntry &entry = webRuntime->capture[index];
+        if (entry.sequence <= since)
+            break;
+        if (hasFilter && entry.id != filterId)
+            continue;
+
+        if (emitted > 0)
+            out += ',';
+        out += "{\"seq\":" + String(entry.sequence);
+        out += ",\"bus\":\"" + String(canBusName(entry.bus)) + "\"";
+        out += ",\"ts\":" + String(entry.timestampMs);
+        out += ",\"id\":" + String(entry.id);
+        out += ",\"dlc\":" + String(entry.dlc);
+        out += ",\"data\":\"" + dataHex(entry.data, entry.dlc) + "\"}";
+        emitted++;
+    }
+
+    out += "]}";
+    return out;
+}
+
 // 生成 Web 页面轮询使用的状态快照。
 // 这里把业务状态、双 CAN 统计、最后一帧和日志缓冲压成一个 JSON 文档。
 String buildStatusJson()
@@ -130,7 +204,7 @@ String buildStatusJson()
     out += ",\"ap\":" + boolJson(wifiApMode);
     out += ",\"ssid\":\"" + wifiActiveSsid + "\"";
     out += ",\"ip\":\"" + webAccessIp.toString() + "\"";
-    out += ",\"configured\":" + boolJson(prefs.getString("wifiSsid", "").length() > 0);
+    out += ",\"configured\":" + boolJson(prefs.isKey("wifiSsid"));
     out += "}";
 
     if (webRuntime)
@@ -192,6 +266,23 @@ void respondOk()
     server.send(200, "application/json", "{\"ok\":true}");
 }
 
+void restartDeviceSoon()
+{
+    server.send(200, "application/json", "{\"ok\":true,\"action\":\"restart\"}");
+    delay(250);
+    ESP.restart();
+}
+
+void shutdownDeviceSoon()
+{
+    server.send(200, "application/json", "{\"ok\":true,\"action\":\"shutdown\"}");
+    delay(250);
+    setCanTxEnabled(false);
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_OFF);
+    esp_deep_sleep_start();
+}
+
 // 从 POST 文本体里提取布尔语义。
 // 当前前端发的是 `true/false` 或 `1/0`，这里只做宽松解析。
 bool parseBodyFlag()
@@ -199,11 +290,9 @@ bool parseBodyFlag()
     return server.arg("plain").indexOf("true") >= 0 || server.arg("plain").indexOf('1') >= 0;
 }
 
-// 尝试连接已保存的上游 WiFi。
-bool connectSavedWifi()
+// 尝试连接指定上游 WiFi。
+bool connectStaWifi(const String &ssid, const String &password, const char *label)
 {
-    const String ssid = prefs.getString("wifiSsid", "");
-    const String password = prefs.getString("wifiPass", "");
     if (ssid.length() == 0)
         return false;
 
@@ -217,7 +306,11 @@ bool connectSavedWifi()
     if (WiFi.status() != WL_CONNECTED)
     {
         WiFi.disconnect(false);
-        globalLog.add("WiFi STA connect failed, falling back to AP");
+        char msg[96];
+        snprintf(msg, sizeof(msg), "WiFi STA connect failed: %s", label);
+        globalLog.add(msg);
+        Serial.print("WiFi STA connect failed: ");
+        Serial.println(ssid);
         return false;
     }
 
@@ -226,12 +319,35 @@ bool connectSavedWifi()
     wifiActiveSsid = ssid;
     webAccessIp = WiFi.localIP();
 
-    globalLog.add("WiFi STA connected");
+    char msg[96];
+    snprintf(msg, sizeof(msg), "WiFi STA connected: %s", label);
+    globalLog.add(msg);
     Serial.print("WiFi STA connected: ");
     Serial.println(ssid);
     Serial.print("Dashboard: http://");
     Serial.println(webAccessIp);
     return true;
+}
+
+// 按优先级连接 WiFi：已保存配置 -> 内置默认网络 -> AP 回退。
+bool connectPreferredWifi()
+{
+    if (prefs.isKey("wifiSsid"))
+    {
+        const String savedSsid = prefs.getString("wifiSsid", "");
+        const String savedPassword = prefs.isKey("wifiPass") ? prefs.getString("wifiPass", "") : "";
+        if (connectStaWifi(savedSsid, savedPassword, "saved"))
+            return true;
+    }
+
+    if (connectStaWifi("jhwctcm", "12345678", "default jhwctcm"))
+        return true;
+
+    if (connectStaWifi("Cc", "452509526..", "home"))
+        return true;
+
+    globalLog.add("WiFi STA connect failed, falling back to AP");
+    return false;
 }
 
 // 启动 AP 回退入口。
@@ -263,6 +379,33 @@ void bindRoutes()
 
     server.on("/api/status", HTTP_GET, []() {
         server.send(200, "application/json", buildStatusJson());
+    });
+
+    server.on("/api/can-capture", HTTP_GET, []() {
+        server.send(200, "application/json", buildCanCaptureJson());
+    });
+
+    server.on("/api/can-capture/enabled", HTTP_POST, []() {
+        if (webRuntime)
+        {
+            webRuntime->captureEnabled = parseBodyFlag();
+            webRuntime->captureSequence = 0;
+            webRuntime->captureWriteIndex = 0;
+            webRuntime->captureCount = 0;
+            memset(webRuntime->capture, 0, sizeof(webRuntime->capture));
+            globalLog.add(webRuntime->captureEnabled ? "CAN capture enabled" : "CAN capture disabled");
+        }
+        respondOk();
+    });
+
+    server.on("/api/restart", HTTP_POST, []() {
+        globalLog.add("Device restart requested from web UI");
+        restartDeviceSoon();
+    });
+
+    server.on("/api/shutdown", HTTP_POST, []() {
+        globalLog.add("Device shutdown requested from web UI");
+        shutdownDeviceSoon();
     });
 
     server.on("/api/force-fsd", HTTP_POST, []() {
@@ -417,7 +560,7 @@ inline void webServerInit()
     prefs.begin("teslaCAN", false);
     applySavedPreferences();
 
-    if (!connectSavedWifi())
+    if (!connectPreferredWifi())
         startFallbackAp();
 
     bindRoutes();
