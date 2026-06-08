@@ -2,6 +2,7 @@
 #include <memory>
 
 #include "ble_ota_service.h"
+#include "can_batch_uploader.h"
 #include "drivers/can_driver.h"
 #include "drivers/mcp2515_driver.h"
 #include "drivers/twai_driver.h"
@@ -46,6 +47,9 @@ LCDDisplay lcd;
 
 // 双 CAN 共享运行态。
 DualCanRuntime runtimeState;
+
+// CAN 批量上传器。
+CanBatchUploader canBatchUploader;
 
 // 串口控制桥。
 UartBridge uartBridge;
@@ -209,6 +213,7 @@ void processBusTraffic(const CanEndpoint &endpoint)
     {
         digitalWrite(PIN_LED, LOW);
         runtimeState.noteRx(endpoint.busId, frame);
+        canBatchUploader.noteRx(endpoint.busId, frame);
         logFrameIfEnabled(endpoint, frame);
         vehicleHandler->handleFrame(endpoint.busId, frame, endpoint.driver, runtimeState);
     }
@@ -242,6 +247,7 @@ void syncCanTxMode()
 void updateOutputs()
 {
     lcd.update(vehicleHandler.get(), &runtimeState);
+    canBatchUploader.loop();
     webServerLoop();
     uartBridge.loop();
     bleOta.loop();
@@ -258,7 +264,8 @@ void initRuntimeModules()
     globalLog.add("Runtime initialized");
 
     vehicleHandler.reset(new HW4DualCanHandler());
-    webServerSetContext(vehicleHandler.get(), &runtimeState);
+    canBatchUploader.begin("teslacan-esp32s3");
+    webServerSetContext(vehicleHandler.get(), &runtimeState, &canBatchUploader);
     uartBridge.begin(vehicleHandler.get(), &runtimeState);
 }
 

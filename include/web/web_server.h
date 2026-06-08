@@ -6,6 +6,7 @@
 #include <WiFi.h>
 #include <esp_sleep.h>
 
+#include "../can_batch_uploader.h"
 #include "../handlers.h"
 #include "../log_buffer.h"
 #include "../runtime_state.h"
@@ -24,6 +25,9 @@ static CarManagerBase *webHandler = nullptr;
 
 // 当前挂接到 Web 控制面的双 CAN 运行态。
 static DualCanRuntime *webRuntime = nullptr;
+
+// 当前挂接到 Web 控制面的 CAN 批量上传器。
+static CanBatchUploader *webUploader = nullptr;
 
 // 是否允许串口继续输出原始 CAN 帧。
 static bool serialPrintEnabled = true;
@@ -228,6 +232,22 @@ String buildStatusJson()
     {
         out += ",\"can\":{\"total_rx\":0,\"total_tx\":0,\"a\":{\"name\":\"CAN_A\",\"online\":false,\"rx\":0,\"tx\":0,\"last_id\":0,\"last_dlc\":0,\"last_data\":\"\",\"last_seen_ms\":0,\"last_injected_ms\":0},\"b\":{\"name\":\"CAN_B\",\"online\":false,\"rx\":0,\"tx\":0,\"last_id\":0,\"last_dlc\":0,\"last_data\":\"\",\"last_seen_ms\":0,\"last_injected_ms\":0}}";
         out += ",\"last_frame\":{\"bus\":\"UNKNOWN\",\"id\":0,\"dlc\":0,\"data\":\"\"}";
+    }
+
+    if (webUploader)
+    {
+        out += ",\"upload\":{";
+        out += "\"url\":\"" + String(webUploader->url()) + "\"";
+        out += ",\"pending\":" + String(webUploader->pending());
+        out += ",\"batch_seq\":" + String(webUploader->batchSeq());
+        out += ",\"sent\":" + String(webUploader->sentBatches());
+        out += ",\"failed\":" + String(webUploader->failedBatches());
+        out += ",\"last_http\":" + String(webUploader->lastHttpCode());
+        out += "}";
+    }
+    else
+    {
+        out += ",\"upload\":{\"url\":\"\",\"pending\":0,\"batch_seq\":0,\"sent\":0,\"failed\":0,\"last_http\":0}";
     }
 
     out += ",\"logs\":[";
@@ -538,10 +558,11 @@ void bindRoutes()
 }
 
 // 注入业务处理层和运行态上下文。
-inline void webServerSetContext(CarManagerBase *handler, DualCanRuntime *runtime)
+inline void webServerSetContext(CarManagerBase *handler, DualCanRuntime *runtime, CanBatchUploader *uploader)
 {
     webHandler = handler;
     webRuntime = runtime;
+    webUploader = uploader;
 }
 
 // 返回当前是否允许串口侧打印原始 CAN 帧。
