@@ -26,6 +26,15 @@ public:
     void begin(const char *deviceId)
     {
         deviceId_ = deviceId ? deviceId : "esp32-can";
+        if (!uploadTaskHandle_)
+        {
+            if (xTaskCreatePinnedToCore(uploadTask, "can_upload", 8192, this, 1, &uploadTaskHandle_, 0) != pdPASS)
+            {
+                uploadTaskHandle_ = nullptr;
+                failedBatches_++;
+                lastHttpCode_ = -2;
+            }
+        }
     }
 
     void noteRx(CanBusId bus, const CanFrame &frame)
@@ -48,18 +57,13 @@ public:
 
     void loop()
     {
-        if (!batchReady_ || uploadInProgress_ || WiFi.status() != WL_CONNECTED)
+        if (!batchReady_ || uploadInProgress_ || WiFi.status() != WL_CONNECTED || !uploadTaskHandle_)
             return;
 
         memcpy(uploadBuffer_, buffer_, sizeof(uploadBuffer_));
         batchReady_ = false;
         uploadInProgress_ = true;
-        if (xTaskCreatePinnedToCore(uploadTask, "can_upload", 8192, this, 1, nullptr, 0) != pdPASS)
-        {
-            uploadInProgress_ = false;
-            failedBatches_++;
-            lastHttpCode_ = -2;
-        }
+        xTaskNotifyGive(uploadTaskHandle_);
     }
 
     uint16_t pending() const { return writeIndex_; }
@@ -86,9 +90,12 @@ private:
     static void uploadTask(void *arg)
     {
         CanBatchUploader *self = static_cast<CanBatchUploader *>(arg);
-        self->sendBatch();
-        self->uploadInProgress_ = false;
-        vTaskDelete(nullptr);
+        for (;;)
+        {
+            ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+            self->sendBatch();
+            self->uploadInProgress_ = false;
+        }
     }
 
     String buildPayload()
@@ -135,6 +142,7 @@ private:
         {
             failedBatches_++;
             lastHttpCode_ = -1;
+            http.end();
             return;
         }
 
@@ -151,6 +159,7 @@ private:
     const char *deviceId_ = "esp32-can";
     CanUploadEntry buffer_[CAN_UPLOAD_BATCH_SIZE];
     CanUploadEntry uploadBuffer_[CAN_UPLOAD_BATCH_SIZE];
+    TaskHandle_t uploadTaskHandle_ = nullptr;
     uint16_t writeIndex_ = 0;
     bool batchReady_ = false;
     volatile bool uploadInProgress_ = false;

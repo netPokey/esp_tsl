@@ -19,6 +19,25 @@ class CanBatchUploaderFirmwareTest(unittest.TestCase):
         loop_body = uploader.split("    void loop()", 1)[1].split("    uint16_t pending()", 1)[0]
 
         self.assertNotIn("sendBatch();", loop_body)
+        self.assertIn("xTaskNotifyGive", loop_body)
+
+    def test_uploader_creates_one_background_upload_task(self):
+        uploader = Path("include/can_batch_uploader.h").read_text(encoding="utf-8")
+        begin_body = uploader.split("    void begin", 1)[1].split("    void noteRx", 1)[0]
+        task_body = uploader.split("    static void uploadTask", 1)[1].split("    String buildPayload", 1)[0]
+
+        self.assertIn("uploadTaskHandle_", begin_body)
+        self.assertIn("xTaskCreatePinnedToCore", begin_body)
+        self.assertIn("pdPASS", begin_body)
+        self.assertIn("lastHttpCode_ = -2", begin_body)
+        self.assertIn("ulTaskNotifyTake", task_body)
+        self.assertNotIn("vTaskDelete", task_body)
+
+    def test_uploader_releases_http_client_on_begin_failure(self):
+        uploader = Path("include/can_batch_uploader.h").read_text(encoding="utf-8")
+        begin_failure_body = uploader.split("if (!http.begin(CAN_UPLOAD_DEFAULT_URL))", 1)[1].split("http.addHeader", 1)[0]
+
+        self.assertIn("http.end();", begin_failure_body)
 
 
 if __name__ == "__main__":
