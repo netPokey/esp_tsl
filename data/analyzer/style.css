@@ -1,0 +1,10 @@
+* { box-sizing: border-box; font-family: ui-monospace, monospace; }
+body { margin: 0; background: #111; color: #ddd; }
+.banner { padding: 10px; text-align: center; font-weight: bold; cursor: pointer; }
+.banner.listen { background: #1b5e20; color: #fff; }
+.banner.tx { background: #b71c1c; color: #fff; }
+#status { padding: 6px 10px; color: #888; }
+.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 8px; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { border: 1px solid #333; padding: 2px 6px; text-align: left; }
+h2 { margin: 4px 0; }
