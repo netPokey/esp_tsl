@@ -19,6 +19,7 @@ struct WsFrameRecord
     uint32_t last_rx_ms;
     uint16_t byte_age_ms[8];
     uint32_t rx_count;
+    uint16_t last_delta_ms;
     uint16_t period_ms;
     uint16_t jitter_ms;
     uint16_t change_score;

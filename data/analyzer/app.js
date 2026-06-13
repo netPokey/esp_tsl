@@ -130,7 +130,7 @@ function parseDelta(buf) {
   if (dv.getUint8(o++) !== 0x01) return;
   const count = dv.getUint8(o++);
   for (let i = 0; i < count; i++) {
-    if (o + 43 > buf.byteLength) return;
+    if (o + 45 > buf.byteLength) return;
     const ch = dv.getUint8(o); o += 1;
     const id = dv.getUint16(o, true); o += 2;
     const dlc = dv.getUint8(o); o += 1;
@@ -139,13 +139,12 @@ function parseDelta(buf) {
     const byteAge = [];
     for (let b = 0; b < 8; b++) { byteAge.push(dv.getUint16(o, true)); o += 2; }
     const countRx = dv.getUint32(o, true); o += 4;
+    const deltaMs = dv.getUint16(o, true); o += 2;
     const periodMs = dv.getUint16(o, true); o += 2;
     const jitterMs = dv.getUint16(o, true); o += 2;
     const changeScore = dv.getUint16(o, true); o += 2;
     const flags = dv.getUint8(o); o += 1;
     const key = ch * 4096 + id;
-    const prev = records[key]?.lastRx;
-    const deltaMs = prev === undefined ? 0 : lastRx - prev;
     const rec = { key, ch, id, dlc, data, byteAge, count: countRx, lastRx, deltaMs, periodMs, jitterMs, changeScore, flags };
     records[key] = rec;
     paintRecord(rec);

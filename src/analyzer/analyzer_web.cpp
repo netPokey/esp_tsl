@@ -92,6 +92,7 @@ WsFrameRecord toWire(uint8_t channel, uint32_t id, const IdRecord &record, uint6
         wire.byte_age_ms[i] = ageMs > 65535 ? 65535 : static_cast<uint16_t>(ageMs);
     }
     wire.rx_count = record.rx_count;
+    wire.last_delta_ms = record.last_delta_us > 65535000 ? 65535 : static_cast<uint16_t>(record.last_delta_us / 1000);
     wire.period_ms = record.period_est_us > 65535000 ? 65535 : static_cast<uint16_t>(record.period_est_us / 1000);
     wire.jitter_ms = record.jitter_us > 65535000 ? 65535 : static_cast<uint16_t>(record.jitter_us / 1000);
     wire.change_score = record.change_score;

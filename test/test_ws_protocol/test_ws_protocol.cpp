@@ -13,6 +13,7 @@ void test_frame_delta_header_and_one_record()
     rec.last_rx_ms = 0x01020304;
     for (int i = 0; i < 8; ++i) rec.byte_age_ms[i] = 0;
     rec.rx_count = 42;
+    rec.last_delta_ms = 99;
     rec.period_ms = 100;
     rec.jitter_ms = 5;
     rec.change_score = 12;
@@ -30,6 +31,7 @@ void test_frame_delta_header_and_one_record()
     TEST_ASSERT_EQUAL_UINT16(0x132, out->id);
     TEST_ASSERT_EQUAL_UINT8(0xBB, out->data[1]);
     TEST_ASSERT_EQUAL_UINT32(42, out->rx_count);
+    TEST_ASSERT_EQUAL_UINT16(99, out->last_delta_ms);
     TEST_ASSERT_EQUAL_UINT16(100, out->period_ms);
     TEST_ASSERT_EQUAL_UINT16(5, out->jitter_ms);
     TEST_ASSERT_EQUAL_UINT16(12, out->change_score);
