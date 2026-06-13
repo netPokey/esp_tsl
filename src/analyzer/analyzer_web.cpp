@@ -16,13 +16,16 @@ AsyncWebSocket ws("/ws");
 
 FrameQueue *g_queue = nullptr;
 IdTable *g_table = nullptr;
+BusStatsTracker *g_stats = nullptr;
 
 constexpr uint32_t kDirtyKeys = static_cast<uint32_t>(kChannelCount) * kStdIdCount;
 uint8_t g_dirty[kDirtyKeys / 8] = {};
 
 constexpr size_t kPushBufBytes = 1400;
 uint32_t g_lastPushMs = 0;
+uint32_t g_lastStatsMs = 0;
 constexpr uint32_t kPushIntervalMs = 66;
+constexpr uint32_t kStatsIntervalMs = 1000;
 
 void markDirty(uint8_t channel, uint32_t id)
 {
@@ -66,6 +69,8 @@ void drainQueueIntoTable()
     {
         if (cap.id >= kStdIdCount)
             continue;
+        if (g_stats)
+            g_stats->noteRx(cap);
         g_table->update(cap);
         markDirty(cap.channel, cap.id);
     }
@@ -87,6 +92,10 @@ WsFrameRecord toWire(uint8_t channel, uint32_t id, const IdRecord &record, uint6
         wire.byte_age_ms[i] = ageMs > 65535 ? 65535 : static_cast<uint16_t>(ageMs);
     }
     wire.rx_count = record.rx_count;
+    wire.period_ms = record.period_est_us > 65535000 ? 65535 : static_cast<uint16_t>(record.period_est_us / 1000);
+    wire.jitter_ms = record.jitter_us > 65535000 ? 65535 : static_cast<uint16_t>(record.jitter_us / 1000);
+    wire.change_score = record.change_score;
+    wire.flags = record.flags;
     return wire;
 }
 
@@ -124,12 +133,32 @@ void pushDelta()
     }
     flush();
 }
+
+void pushBusStats()
+{
+    if (!g_stats || ws.count() == 0)
+        return;
+
+    const BusStatsSnapshot snapshot = g_stats->snapshot();
+    WsBusStats stats = {};
+    stats.fps_a = snapshot.fps[0];
+    stats.fps_b = snapshot.fps[1];
+    stats.load_a_x10 = snapshot.load_x10[0];
+    stats.load_b_x10 = snapshot.load_x10[1];
+    stats.dropped = snapshot.dropped;
+
+    uint8_t buf[1 + sizeof(WsBusStats)];
+    const size_t n = wsBuildBusStats(buf, sizeof(buf), stats);
+    if (n > 0)
+        ws.binaryAll(buf, n);
+}
 }
 
-void analyzerWebSetContext(FrameQueue *queue, IdTable *table)
+void analyzerWebSetContext(FrameQueue *queue, IdTable *table, BusStatsTracker *stats)
 {
     g_queue = queue;
     g_table = table;
+    g_stats = stats;
 }
 
 void analyzerWebBegin()
@@ -185,9 +214,18 @@ void analyzerWebLoop()
     ws.cleanupClients();
 
     const uint32_t now = millis();
+    if (g_stats)
+        g_stats->update(now, g_queue ? g_queue->dropped() : 0);
+
     if (now - g_lastPushMs >= kPushIntervalMs)
     {
         g_lastPushMs = now;
         pushDelta();
+    }
+
+    if (now - g_lastStatsMs >= kStatsIntervalMs)
+    {
+        g_lastStatsMs = now;
+        pushBusStats();
     }
 }

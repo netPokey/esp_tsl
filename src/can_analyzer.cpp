@@ -6,6 +6,7 @@
 #include "analyzer/analyzer_control.h"
 #include "analyzer/analyzer_web.h"
 #include "analyzer/analyzer_wifi.h"
+#include "analyzer/bus_stats.h"
 #include "analyzer/frame_queue.h"
 #include "analyzer/id_table.h"
 #include "analyzer/rx_task.h"
@@ -21,6 +22,7 @@ CapturedFrame g_queueStorage[kQueueCapacity];
 FrameQueue g_queue;
 
 IdTable g_table;
+BusStatsTracker g_stats;
 
 std::unique_ptr<MCP2515Driver> g_canA;
 std::unique_ptr<TWAIDriver> g_canB;
@@ -55,6 +57,7 @@ void setup()
     g_table.init(static_cast<IdRecord *>(tableMem));
 
     g_queue.init(g_queueStorage, kQueueCapacity);
+    g_stats.begin(millis());
 
     g_canA.reset(new MCP2515Driver(MCP2515_CS, MCP2515_RST,
                                    MCP2515_SCLK, MCP2515_MISO, MCP2515_MOSI,
@@ -83,7 +86,7 @@ void setup()
                 &g_queue);
 
     const String ip = analyzerWifiBegin();
-    analyzerWebSetContext(&g_queue, &g_table);
+    analyzerWebSetContext(&g_queue, &g_table, &g_stats);
     analyzerWebBegin();
 
     Serial.print("CAN analyzer ready (listen-only): http://");
