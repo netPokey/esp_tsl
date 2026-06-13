@@ -2,6 +2,8 @@
 .pio/build
 .pio/build_cache
 .pio/build_flags.*
+.pio/libdeps/analyzer/
+.pio/libdeps/native/
 *.bin
 *.pyc
 __pycache__/
