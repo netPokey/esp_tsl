@@ -14,10 +14,18 @@
     <button id="tx-b-toggle">CAN_B TX</button>
     <span id="bus-health">CAN_A: ? · CAN_B: ?</span>
   </div>
+  <div class="controls">
+    <label>进制 <select id="base-select"><option value="hex">HEX</option><option value="dec">DEC</option><option value="bin">BIN</option><option value="ascii">ASCII</option></select></label>
+    <label><input id="suppress-static" type="checkbox"/> 静态抑制</label>
+    <label>阈值 <input id="static-seconds" type="number" min="1" max="60" value="5"/> 秒</label>
+    <label><input id="freeze-view" type="checkbox"/> 冻结</label>
+    <label>排序 <select id="sort-select"><option value="id">ID</option><option value="activity">活跃度</option></select></label>
+    <span id="bus-stats">A: 0fps 0.0% · B: 0fps 0.0% · dropped=0</span>
+  </div>
   <div id="status">WS: 连接中…</div>
   <div class="grid">
-    <section><h2>CAN_A</h2><table id="tbl-a"><thead><tr><th>ID</th><th>DLC</th><th>Data</th><th>计数</th><th>Δt(ms)</th></tr></thead><tbody></tbody></table></section>
-    <section><h2>CAN_B</h2><table id="tbl-b"><thead><tr><th>ID</th><th>DLC</th><th>Data</th><th>计数</th><th>Δt(ms)</th></tr></thead><tbody></tbody></table></section>
+    <section><h2>CAN_A</h2><table id="tbl-a"><thead><tr><th>ID</th><th>DLC</th><th>Data</th><th>计数</th><th>Δt</th><th>周期</th><th>抖动</th><th>活跃</th></tr></thead><tbody></tbody></table></section>
+    <section><h2>CAN_B</h2><table id="tbl-b"><thead><tr><th>ID</th><th>DLC</th><th>Data</th><th>计数</th><th>Δt</th><th>周期</th><th>抖动</th><th>活跃</th></tr></thead><tbody></tbody></table></section>
   </div>
   <script src="app.js"></script>
 </body>
