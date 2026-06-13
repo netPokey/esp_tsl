@@ -1,4 +1,5 @@
 #include "analyzer/analyzer_web.h"
+#include "analyzer/analyzer_control.h"
 #include "analyzer/ws_protocol.h"
 #include "can_helpers.h"
 
@@ -38,7 +39,15 @@ void handleCommand(const char *text, size_t len)
 
     const char *cmd = doc["cmd"] | "";
     if (strcmp(cmd, "tx_master") == 0)
+    {
         setCanTxEnabled(doc["on"] | false);
+        return;
+    }
+    if (strcmp(cmd, "tx_enable") == 0)
+    {
+        const char *ch = doc["ch"] | "A";
+        setAnalyzerChannelTxEnabled((ch[0] == 'B' || ch[0] == 'b') ? 1 : 0, doc["on"] | false);
+    }
 }
 
 void onWsEvent(AsyncWebSocket *, AsyncWebSocketClient *, AwsEventType type, void *, uint8_t *data, size_t len)
@@ -129,7 +138,14 @@ void analyzerWebBegin()
     server.addHandler(&ws);
 
     server.on("/api/status", HTTP_GET, [](AsyncWebServerRequest *request) {
-        request->send(200, "application/json", String("{\"can_tx_enabled\":") + (isCanTxEnabled() ? "true" : "false") + "}");
+        String out = "{";
+        out += "\"can_tx_enabled\":" + String(isCanTxEnabled() ? "true" : "false");
+        out += ",\"tx_a_enabled\":" + String(isAnalyzerChannelTxEnabled(0) ? "true" : "false");
+        out += ",\"tx_b_enabled\":" + String(isAnalyzerChannelTxEnabled(1) ? "true" : "false");
+        out += ",\"can_a_online\":" + String(isAnalyzerChannelOnline(0) ? "true" : "false");
+        out += ",\"can_b_online\":" + String(isAnalyzerChannelOnline(1) ? "true" : "false");
+        out += "}";
+        request->send(200, "application/json", out);
     });
 
     server.on("/api/can-tx", HTTP_POST,
@@ -138,6 +154,24 @@ void analyzerWebBegin()
               [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t, size_t) {
                   const String body(reinterpret_cast<const char *>(data), len);
                   setCanTxEnabled(body.indexOf("true") >= 0);
+                  request->send(200, "application/json", "{\"ok\":true}");
+              });
+
+    server.on("/api/can-tx-a", HTTP_POST,
+              [](AsyncWebServerRequest *) {},
+              nullptr,
+              [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t, size_t) {
+                  const String body(reinterpret_cast<const char *>(data), len);
+                  setAnalyzerChannelTxEnabled(0, body.indexOf("true") >= 0);
+                  request->send(200, "application/json", "{\"ok\":true}");
+              });
+
+    server.on("/api/can-tx-b", HTTP_POST,
+              [](AsyncWebServerRequest *) {},
+              nullptr,
+              [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t, size_t) {
+                  const String body(reinterpret_cast<const char *>(data), len);
+                  setAnalyzerChannelTxEnabled(1, body.indexOf("true") >= 0);
                   request->send(200, "application/json", "{\"ok\":true}");
               });
 

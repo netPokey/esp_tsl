@@ -1,8 +1,13 @@
 const banner = document.getElementById('tx-banner');
+const masterToggle = document.getElementById('master-toggle');
+const txAToggle = document.getElementById('tx-a-toggle');
+const txBToggle = document.getElementById('tx-b-toggle');
+const busHealth = document.getElementById('bus-health');
 const statusEl = document.getElementById('status');
 const tbody = { 0: document.querySelector('#tbl-a tbody'), 1: document.querySelector('#tbl-b tbody') };
 const rows = {};
 const lastRxMs = {};
+let txState = { master: false, a: false, b: false, onlineA: false, onlineB: false };
 
 function hex(n, w) { return n.toString(16).toUpperCase().padStart(w, '0'); }
 
@@ -29,11 +34,13 @@ function upsert(ch, id, dlc, data, count, lastRx) {
 }
 
 function parseDelta(buf) {
+  if (buf.byteLength < 2) return;
   const dv = new DataView(buf);
   let o = 0;
   if (dv.getUint8(o++) !== 0x01) return;
   const count = dv.getUint8(o++);
   for (let i = 0; i < count; i++) {
+    if (o + 36 > buf.byteLength) return;
     const ch = dv.getUint8(o); o += 1;
     const id = dv.getUint16(o, true); o += 2;
     const dlc = dv.getUint8(o); o += 1;
@@ -53,21 +60,46 @@ function connect() {
   ws.onmessage = (ev) => { if (ev.data instanceof ArrayBuffer) parseDelta(ev.data); };
 }
 
+function paintTxState() {
+  const anyTx = txState.master && ((txState.a && txState.onlineA) || (txState.b && txState.onlineB));
+  banner.className = 'banner ' + (anyTx ? 'tx' : 'listen');
+  banner.textContent = anyTx ? '可发送（至少一个通道 TX 开启）' : '监听-only（TX 关闭）';
+  masterToggle.classList.toggle('on', txState.master);
+  txAToggle.classList.toggle('on', txState.a);
+  txBToggle.classList.toggle('on', txState.b);
+  txAToggle.disabled = !txState.onlineA;
+  txBToggle.disabled = !txState.onlineB;
+  busHealth.textContent = `CAN_A: ${txState.onlineA ? '在线' : '离线'} · CAN_B: ${txState.onlineB ? '在线' : '离线'}`;
+}
+
 async function refreshTxBanner() {
   try {
     const r = await fetch('/api/status');
     const s = await r.json();
-    const on = !!s.can_tx_enabled;
-    banner.className = 'banner ' + (on ? 'tx' : 'listen');
-    banner.textContent = on ? '可发送（TX 开启）' : '监听-only（TX 关闭）';
+    txState = {
+      master: !!s.can_tx_enabled,
+      a: !!s.tx_a_enabled,
+      b: !!s.tx_b_enabled,
+      onlineA: !!s.can_a_online,
+      onlineB: !!s.can_b_online,
+    };
+    paintTxState();
   } catch (e) {}
 }
 
-banner.onclick = async () => {
-  const on = banner.classList.contains('tx');
-  await fetch('/api/can-tx', { method: 'POST', body: on ? 'false' : 'true' });
+masterToggle.onclick = async () => {
+  await fetch('/api/can-tx', { method: 'POST', body: txState.master ? 'false' : 'true' });
   refreshTxBanner();
 };
+txAToggle.onclick = async () => {
+  await fetch('/api/can-tx-a', { method: 'POST', body: txState.a ? 'false' : 'true' });
+  refreshTxBanner();
+};
+txBToggle.onclick = async () => {
+  await fetch('/api/can-tx-b', { method: 'POST', body: txState.b ? 'false' : 'true' });
+  refreshTxBanner();
+};
+banner.onclick = masterToggle.onclick;
 
 connect();
 refreshTxBanner();

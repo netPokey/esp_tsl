@@ -8,6 +8,12 @@
 </head>
 <body>
   <div id="tx-banner" class="banner listen">监听-only（TX 关闭）</div>
+  <div class="controls">
+    <button id="master-toggle">TX 总开关</button>
+    <button id="tx-a-toggle">CAN_A TX</button>
+    <button id="tx-b-toggle">CAN_B TX</button>
+    <span id="bus-health">CAN_A: ? · CAN_B: ?</span>
+  </div>
   <div id="status">WS: 连接中…</div>
   <div class="grid">
     <section><h2>CAN_A</h2><table id="tbl-a"><thead><tr><th>ID</th><th>DLC</th><th>Data</th><th>计数</th><th>Δt(ms)</th></tr></thead><tbody></tbody></table></section>

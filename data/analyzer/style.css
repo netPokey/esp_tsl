@@ -3,6 +3,11 @@ body { margin: 0; background: #111; color: #ddd; }
 .banner { padding: 10px; text-align: center; font-weight: bold; cursor: pointer; }
 .banner.listen { background: #1b5e20; color: #fff; }
 .banner.tx { background: #b71c1c; color: #fff; }
+.controls { display: flex; align-items: center; gap: 8px; padding: 8px 10px; background: #181818; border-bottom: 1px solid #333; }
+button { border: 1px solid #555; background: #222; color: #ddd; padding: 5px 8px; cursor: pointer; }
+button.on { background: #7f1d1d; border-color: #ef4444; color: #fff; }
+button:disabled { opacity: 0.4; cursor: not-allowed; }
+#bus-health { color: #aaa; }
 #status { padding: 6px 10px; color: #888; }
 .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 8px; }
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
