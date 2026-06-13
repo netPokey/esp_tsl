@@ -1,0 +1,159 @@
+#include "analyzer/analyzer_web.h"
+#include "analyzer/ws_protocol.h"
+#include "can_helpers.h"
+
+#include <Arduino.h>
+#include <ArduinoJson.h>
+#include <ESPAsyncWebServer.h>
+#include <LittleFS.h>
+#include <esp_timer.h>
+
+namespace
+{
+AsyncWebServer server(80);
+AsyncWebSocket ws("/ws");
+
+FrameQueue *g_queue = nullptr;
+IdTable *g_table = nullptr;
+
+constexpr uint32_t kDirtyKeys = static_cast<uint32_t>(kChannelCount) * kStdIdCount;
+uint8_t g_dirty[kDirtyKeys / 8] = {};
+
+constexpr size_t kPushBufBytes = 1400;
+uint32_t g_lastPushMs = 0;
+constexpr uint32_t kPushIntervalMs = 66;
+
+void markDirty(uint8_t channel, uint32_t id)
+{
+    const uint32_t key = static_cast<uint32_t>(channel) * kStdIdCount + id;
+    if (key < kDirtyKeys)
+        g_dirty[key >> 3] |= static_cast<uint8_t>(1u << (key & 7));
+}
+
+void handleCommand(const char *text, size_t len)
+{
+    StaticJsonDocument<256> doc;
+    if (deserializeJson(doc, text, len))
+        return;
+
+    const char *cmd = doc["cmd"] | "";
+    if (strcmp(cmd, "tx_master") == 0)
+        setCanTxEnabled(doc["on"] | false);
+}
+
+void onWsEvent(AsyncWebSocket *, AsyncWebSocketClient *, AwsEventType type, void *, uint8_t *data, size_t len)
+{
+    if (type == WS_EVT_DATA)
+        handleCommand(reinterpret_cast<const char *>(data), len);
+}
+
+void drainQueueIntoTable()
+{
+    if (!g_queue || !g_table)
+        return;
+
+    CapturedFrame cap;
+    while (g_queue->pop(cap))
+    {
+        if (cap.id >= kStdIdCount)
+            continue;
+        g_table->update(cap);
+        markDirty(cap.channel, cap.id);
+    }
+}
+
+WsFrameRecord toWire(uint8_t channel, uint32_t id, const IdRecord &record, uint64_t nowUs)
+{
+    WsFrameRecord wire = {};
+    wire.channel = channel;
+    wire.id = static_cast<uint16_t>(id);
+    wire.dlc = record.dlc;
+    for (uint8_t i = 0; i < 8; ++i)
+        wire.data[i] = record.data[i];
+    wire.last_rx_ms = static_cast<uint32_t>(record.last_rx_ts / 1000);
+    for (uint8_t i = 0; i < 8; ++i)
+    {
+        const uint64_t ageUs = nowUs > record.byte_change_ts[i] ? nowUs - record.byte_change_ts[i] : 0;
+        const uint64_t ageMs = ageUs / 1000;
+        wire.byte_age_ms[i] = ageMs > 65535 ? 65535 : static_cast<uint16_t>(ageMs);
+    }
+    wire.rx_count = record.rx_count;
+    return wire;
+}
+
+void pushDelta()
+{
+    if (!g_table || ws.count() == 0)
+        return;
+
+    static uint8_t buf[kPushBufBytes];
+    constexpr size_t batchCapacity = 32;
+    WsFrameRecord batch[batchCapacity];
+    size_t batchN = 0;
+    const uint64_t nowUs = static_cast<uint64_t>(esp_timer_get_time());
+
+    auto flush = [&]() {
+        if (batchN == 0)
+            return;
+        const size_t n = wsBuildFrameDelta(buf, sizeof(buf), batch, static_cast<uint8_t>(batchN));
+        if (n > 0)
+            ws.binaryAll(buf, n);
+        batchN = 0;
+    };
+
+    for (uint32_t key = 0; key < kDirtyKeys; ++key)
+    {
+        if ((g_dirty[key >> 3] & (1u << (key & 7))) == 0)
+            continue;
+        g_dirty[key >> 3] &= static_cast<uint8_t>(~(1u << (key & 7)));
+
+        const uint8_t channel = static_cast<uint8_t>(key / kStdIdCount);
+        const uint32_t id = key % kStdIdCount;
+        batch[batchN++] = toWire(channel, id, g_table->record(channel, id), nowUs);
+        if (batchN >= batchCapacity)
+            flush();
+    }
+    flush();
+}
+}
+
+void analyzerWebSetContext(FrameQueue *queue, IdTable *table)
+{
+    g_queue = queue;
+    g_table = table;
+}
+
+void analyzerWebBegin()
+{
+    ws.onEvent(onWsEvent);
+    server.addHandler(&ws);
+
+    server.on("/api/status", HTTP_GET, [](AsyncWebServerRequest *request) {
+        request->send(200, "application/json", String("{\"can_tx_enabled\":") + (isCanTxEnabled() ? "true" : "false") + "}");
+    });
+
+    server.on("/api/can-tx", HTTP_POST,
+              [](AsyncWebServerRequest *) {},
+              nullptr,
+              [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t, size_t) {
+                  const String body(reinterpret_cast<const char *>(data), len);
+                  setCanTxEnabled(body.indexOf("true") >= 0);
+                  request->send(200, "application/json", "{\"ok\":true}");
+              });
+
+    server.serveStatic("/", LittleFS, "/").setDefaultFile("index.html");
+    server.begin();
+}
+
+void analyzerWebLoop()
+{
+    drainQueueIntoTable();
+    ws.cleanupClients();
+
+    const uint32_t now = millis();
+    if (now - g_lastPushMs >= kPushIntervalMs)
+    {
+        g_lastPushMs = now;
+        pushDelta();
+    }
+}
