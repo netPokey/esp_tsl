@@ -62,6 +62,30 @@ void test_delta_time_tracks_prev_and_last()
     TEST_ASSERT_EQUAL_UINT64(1000, r.prev_rx_ts);
 }
 
+void test_period_jitter_and_activity_score()
+{
+    CapturedFrame f;
+    f.channel = 0; f.id = 0x600; f.dlc = 2;
+    f.ts_us = 1000;
+    f.data[0] = 0x10; f.data[1] = 0x20;
+    table.update(f);
+
+    f.ts_us = 3000; // delta 2000
+    f.data[0] = 0x11;
+    table.update(f);
+
+    f.ts_us = 7000; // delta 4000, period=(2000*7+4000)/8=2250, jitter=1750
+    f.data[1] = 0x21;
+    table.update(f);
+
+    const IdRecord &r = table.record(0, 0x600);
+    TEST_ASSERT_EQUAL_UINT32(4000, r.last_delta_us);
+    TEST_ASSERT_EQUAL_UINT32(2250, r.period_est_us);
+    TEST_ASSERT_EQUAL_UINT32(1750, r.jitter_us);
+    TEST_ASSERT_EQUAL_UINT16(3, r.change_score);
+    TEST_ASSERT_EQUAL_UINT64(7000, r.last_change_ts);
+}
+
 void test_channel_isolation()
 {
     CapturedFrame f;
@@ -78,6 +102,7 @@ int main(int, char **)
     RUN_TEST(test_dedup_same_id_increments_count_not_new_slot);
     RUN_TEST(test_byte_change_ts_updates_only_on_change);
     RUN_TEST(test_delta_time_tracks_prev_and_last);
+    RUN_TEST(test_period_jitter_and_activity_score);
     RUN_TEST(test_channel_isolation);
     return UNITY_END();
 }

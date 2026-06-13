@@ -14,8 +14,11 @@ struct IdRecord
     uint64_t byte_change_ts[8] = {};
     uint64_t last_rx_ts = 0;
     uint64_t prev_rx_ts = 0;
+    uint64_t last_change_ts = 0;
     uint32_t rx_count = 0;
-    uint32_t period_est = 0;
+    uint32_t last_delta_us = 0;
+    uint32_t period_est_us = 0;
+    uint32_t jitter_us = 0;
     uint16_t change_score = 0;
     uint8_t flags = 0;
 };
