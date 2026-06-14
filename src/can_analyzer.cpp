@@ -9,7 +9,10 @@
 #include "analyzer/bus_stats.h"
 #include "analyzer/frame_queue.h"
 #include "analyzer/id_table.h"
+#include "analyzer/label_store.h"
+#include "analyzer/pretrigger_buffer.h"
 #include "analyzer/rx_task.h"
+#include "analyzer/snapshot_store.h"
 #include "can_helpers.h"
 #include "drivers/mcp2515_driver.h"
 #include "drivers/twai_driver.h"
@@ -23,6 +26,14 @@ FrameQueue g_queue;
 
 IdTable g_table;
 BusStatsTracker g_stats;
+
+constexpr size_t kPretriggerCapacity = 16384;
+CapturedFrame *g_pretriggerStorage = nullptr;
+PretriggerBuffer g_pretrigger;
+SnapshotRecord *g_snapshotA = nullptr;
+SnapshotRecord *g_snapshotB = nullptr;
+SnapshotStore g_snapshots;
+LabelStore g_labels;
 
 std::unique_ptr<MCP2515Driver> g_canA;
 std::unique_ptr<TWAIDriver> g_canB;
@@ -59,6 +70,22 @@ void setup()
     g_queue.init(g_queueStorage, kQueueCapacity);
     g_stats.begin(millis());
 
+    g_pretriggerStorage = static_cast<CapturedFrame *>(ps_malloc(sizeof(CapturedFrame) * kPretriggerCapacity));
+    if (g_pretriggerStorage)
+        g_pretrigger.init(g_pretriggerStorage, kPretriggerCapacity);
+    else
+        Serial.println("PSRAM allocation failed for pretrigger buffer");
+
+    const size_t snapshotBytes = sizeof(SnapshotRecord) * kChannelCount * kStdIdCount;
+    g_snapshotA = static_cast<SnapshotRecord *>(ps_malloc(snapshotBytes));
+    g_snapshotB = static_cast<SnapshotRecord *>(ps_malloc(snapshotBytes));
+    if (g_snapshotA && g_snapshotB)
+        g_snapshots.init(g_snapshotA, g_snapshotB);
+    else
+        Serial.println("PSRAM allocation failed for snapshot buffers");
+
+    g_labels.begin();
+
     g_canA.reset(new MCP2515Driver(MCP2515_CS, MCP2515_RST,
                                    MCP2515_SCLK, MCP2515_MISO, MCP2515_MOSI,
                                    &SPI, 10000000));
@@ -86,7 +113,10 @@ void setup()
                 &g_queue);
 
     const String ip = analyzerWifiBegin();
-    analyzerWebSetContext(&g_queue, &g_table, &g_stats);
+    analyzerWebSetContext(&g_queue, &g_table, &g_stats,
+                          g_pretriggerStorage ? &g_pretrigger : nullptr,
+                          (g_snapshotA && g_snapshotB) ? &g_snapshots : nullptr,
+                          &g_labels);
     analyzerWebBegin();
 
     Serial.print("CAN analyzer ready (listen-only): http://");

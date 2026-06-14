@@ -17,6 +17,9 @@ AsyncWebSocket ws("/ws");
 FrameQueue *g_queue = nullptr;
 IdTable *g_table = nullptr;
 BusStatsTracker *g_stats = nullptr;
+PretriggerBuffer *g_pretrigger = nullptr;
+SnapshotStore *g_snapshots = nullptr;
+LabelStore *g_labels = nullptr;
 
 constexpr uint32_t kDirtyKeys = static_cast<uint32_t>(kChannelCount) * kStdIdCount;
 uint8_t g_dirty[kDirtyKeys / 8] = {};
@@ -27,6 +30,94 @@ uint32_t g_lastStatsMs = 0;
 constexpr uint32_t kPushIntervalMs = 66;
 constexpr uint32_t kStatsIntervalMs = 1000;
 
+void sendLabelUpdateNotice()
+{
+    if (ws.count() == 0)
+        return;
+
+    uint8_t buf[3] = {};
+    buf[0] = WS_MSG_DIFF;
+    buf[1] = WS_DIFF_LABELS;
+    buf[2] = 0;
+    ws.binaryAll(buf, sizeof(buf));
+}
+
+void sendSnapshotDiff()
+{
+    if (!g_snapshots || ws.count() == 0)
+        return;
+
+    SnapshotDiffRecord diffs[64];
+    WsDiffRecord wire[64];
+    uint8_t buf[kPushBufBytes];
+    const size_t n = g_snapshots->diff(diffs, 64);
+    for (size_t i = 0; i < n; ++i)
+    {
+        wire[i].channel = diffs[i].channel;
+        wire[i].id = diffs[i].id;
+        wire[i].kind = diffs[i].kind;
+        wire[i].dlc_a = diffs[i].dlc_a;
+        wire[i].dlc_b = diffs[i].dlc_b;
+        for (uint8_t b = 0; b < 8; ++b)
+        {
+            wire[i].data_a[b] = diffs[i].data_a[b];
+            wire[i].data_b[b] = diffs[i].data_b[b];
+        }
+    }
+
+    const size_t bytes = wsBuildSnapshotDiff(buf, sizeof(buf), wire, static_cast<uint8_t>(n));
+    if (bytes > 0)
+        ws.binaryAll(buf, bytes);
+}
+
+void sendPretrigger()
+{
+    if (!g_pretrigger || ws.count() == 0)
+        return;
+
+    WsPretriggerRecord recs[64];
+    uint8_t buf[kPushBufBytes];
+    const uint64_t nowUs = static_cast<uint64_t>(esp_timer_get_time());
+    const size_t n = g_pretrigger->summarize(nowUs, 5000000UL, recs, 64);
+    const size_t bytes = wsBuildPretrigger(buf, sizeof(buf), recs, static_cast<uint8_t>(n));
+    if (bytes > 0)
+        ws.binaryAll(buf, bytes);
+}
+
+void sendBaseline()
+{
+    if (!g_table || ws.count() == 0)
+        return;
+
+    WsBaselineRecord recs[64];
+    uint8_t buf[kPushBufBytes];
+    size_t n = 0;
+
+    auto flush = [&]() {
+        if (n == 0)
+            return;
+        const size_t bytes = wsBuildBaseline(buf, sizeof(buf), recs, static_cast<uint8_t>(n));
+        if (bytes > 0)
+            ws.binaryAll(buf, bytes);
+        n = 0;
+    };
+
+    for (uint8_t ch = 0; ch < kChannelCount; ++ch)
+    {
+        for (uint32_t id = 0; id < kStdIdCount; ++id)
+        {
+            if (!g_table->record(ch, id).present)
+                continue;
+            recs[n].channel = ch;
+            recs[n].id = static_cast<uint16_t>(id);
+            ++n;
+            if (n >= 64)
+                flush();
+        }
+    }
+    flush();
+}
+
 void markDirty(uint8_t channel, uint32_t id)
 {
     const uint32_t key = static_cast<uint32_t>(channel) * kStdIdCount + id;
@@ -36,7 +127,7 @@ void markDirty(uint8_t channel, uint32_t id)
 
 void handleCommand(const char *text, size_t len)
 {
-    StaticJsonDocument<256> doc;
+    JsonDocument doc;
     if (deserializeJson(doc, text, len))
         return;
 
@@ -50,6 +141,48 @@ void handleCommand(const char *text, size_t len)
     {
         const char *ch = doc["ch"] | "A";
         setAnalyzerChannelTxEnabled((ch[0] == 'B' || ch[0] == 'b') ? 1 : 0, doc["on"] | false);
+        return;
+    }
+    if (strcmp(cmd, "snapshot") == 0)
+    {
+        const char *slot = doc["slot"] | "A";
+        if (g_snapshots && g_table)
+            g_snapshots->capture((slot[0] == 'B' || slot[0] == 'b') ? SnapshotSlot::B : SnapshotSlot::A, *g_table);
+        return;
+    }
+    if (strcmp(cmd, "diff") == 0)
+    {
+        sendSnapshotDiff();
+        return;
+    }
+    if (strcmp(cmd, "baseline") == 0)
+    {
+        sendBaseline();
+        return;
+    }
+    if (strcmp(cmd, "mark") == 0)
+    {
+        sendPretrigger();
+        return;
+    }
+    if (strcmp(cmd, "label_set") == 0)
+    {
+        const char *ch = doc["ch"] | "A";
+        const uint8_t channel = (ch[0] == 'B' || ch[0] == 'b') ? 1 : 0;
+        const int id = doc["id"] | -1;
+        const char *text = doc["text"] | "";
+        if (id >= 0 && id < kStdIdCount && g_labels && g_labels->upsert(channel, static_cast<uint16_t>(id), text))
+            sendLabelUpdateNotice();
+        return;
+    }
+    if (strcmp(cmd, "label_delete") == 0)
+    {
+        const char *ch = doc["ch"] | "A";
+        const uint8_t channel = (ch[0] == 'B' || ch[0] == 'b') ? 1 : 0;
+        const int id = doc["id"] | -1;
+        if (id >= 0 && id < kStdIdCount && g_labels && g_labels->remove(channel, static_cast<uint16_t>(id)))
+            sendLabelUpdateNotice();
+        return;
     }
 }
 
@@ -71,6 +204,8 @@ void drainQueueIntoTable()
             continue;
         if (g_stats)
             g_stats->noteRx(cap);
+        if (g_pretrigger)
+            g_pretrigger->push(cap);
         g_table->update(cap);
         markDirty(cap.channel, cap.id);
     }
@@ -155,11 +290,15 @@ void pushBusStats()
 }
 }
 
-void analyzerWebSetContext(FrameQueue *queue, IdTable *table, BusStatsTracker *stats)
+void analyzerWebSetContext(FrameQueue *queue, IdTable *table, BusStatsTracker *stats,
+                           PretriggerBuffer *pretrigger, SnapshotStore *snapshots, LabelStore *labels)
 {
     g_queue = queue;
     g_table = table;
     g_stats = stats;
+    g_pretrigger = pretrigger;
+    g_snapshots = snapshots;
+    g_labels = labels;
 }
 
 void analyzerWebBegin()
@@ -204,6 +343,26 @@ void analyzerWebBegin()
                   setAnalyzerChannelTxEnabled(1, body.indexOf("true") >= 0);
                   request->send(200, "application/json", "{\"ok\":true}");
               });
+
+    server.on("/api/labels", HTTP_GET, [](AsyncWebServerRequest *request) {
+        JsonDocument doc;
+        JsonArray labels = doc.to<JsonArray>();
+        if (g_labels)
+        {
+            const LabelEntry *entries = g_labels->entries();
+            for (size_t i = 0; i < g_labels->count(); ++i)
+            {
+                JsonObject label = labels.createNestedObject();
+                label["ch"] = entries[i].channel == 1 ? "B" : "A";
+                label["id"] = entries[i].id;
+                label["text"] = entries[i].text;
+            }
+        }
+
+        String out;
+        serializeJson(doc, out);
+        request->send(200, "application/json", out);
+    });
 
     server.serveStatic("/", LittleFS, "/").setDefaultFile("index.html");
     server.begin();
