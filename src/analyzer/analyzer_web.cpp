@@ -26,6 +26,14 @@ constexpr uint32_t kDirtyKeys = static_cast<uint32_t>(kChannelCount) * kStdIdCou
 uint8_t g_dirty[kDirtyKeys / 8] = {};
 
 constexpr size_t kPushBufBytes = 1400;
+constexpr size_t kFrameDeltaBatchCapacity = (kPushBufBytes - 2) / sizeof(WsFrameRecord);
+constexpr size_t kSnapshotDiffBatchCapacity = (kPushBufBytes - 3) / sizeof(WsDiffRecord);
+constexpr size_t kPretriggerBatchCapacity = (kPushBufBytes - 3) / sizeof(WsPretriggerRecord);
+constexpr size_t kBaselineBatchCapacity = (kPushBufBytes - 3) / sizeof(WsBaselineRecord);
+static_assert(kFrameDeltaBatchCapacity >= 1, "frame delta batch capacity must be non-zero");
+static_assert(kSnapshotDiffBatchCapacity >= 1, "snapshot diff batch capacity must be non-zero");
+static_assert(kPretriggerBatchCapacity >= 1, "pretrigger batch capacity must be non-zero");
+static_assert(kBaselineBatchCapacity >= 1, "baseline batch capacity must be non-zero");
 uint32_t g_lastPushMs = 0;
 uint32_t g_lastStatsMs = 0;
 constexpr uint32_t kPushIntervalMs = 66;
@@ -58,6 +66,7 @@ constexpr size_t kMaxWsCommandBytes = 256;
 PendingCmd g_pending[kPendingCmdCap];
 volatile size_t g_pendingHead = 0;
 volatile size_t g_pendingTail = 0;
+uint32_t g_pendingDropped = 0;
 portMUX_TYPE g_pendingMux = portMUX_INITIALIZER_UNLOCKED;
 
 void sendLabelUpdateNotice()
@@ -77,15 +86,14 @@ void sendSnapshotDiff()
     if (!g_snapshots || ws.count() == 0)
         return;
 
-    constexpr size_t batchSize = 64;
-    SnapshotDiffRecord diffs[batchSize];
-    WsDiffRecord wire[batchSize];
-    uint8_t buf[kPushBufBytes];
+    static SnapshotDiffRecord diffs[kSnapshotDiffBatchCapacity];
+    static WsDiffRecord wire[kSnapshotDiffBatchCapacity];
+    static uint8_t buf[kPushBufBytes];
     size_t skip = 0;
 
     while (true)
     {
-        const size_t n = g_snapshots->diff(diffs, batchSize, skip);
+        const size_t n = g_snapshots->diff(diffs, kSnapshotDiffBatchCapacity, skip);
         for (size_t i = 0; i < n; ++i)
         {
             wire[i].channel = diffs[i].channel;
@@ -103,7 +111,7 @@ void sendSnapshotDiff()
         const size_t bytes = wsBuildSnapshotDiff(buf, sizeof(buf), wire, static_cast<uint8_t>(n));
         if ((n > 0 || skip == 0) && bytes > 0)
             ws.binaryAll(buf, bytes);
-        if (n < batchSize)
+        if (n < kSnapshotDiffBatchCapacity)
             break;
         skip += n;
     }
@@ -114,19 +122,18 @@ void sendPretrigger()
     if (!g_pretrigger || ws.count() == 0)
         return;
 
-    constexpr size_t batchSize = 64;
-    WsPretriggerRecord recs[batchSize];
-    uint8_t buf[kPushBufBytes];
+    static WsPretriggerRecord recs[kPretriggerBatchCapacity];
+    static uint8_t buf[kPushBufBytes];
     const uint64_t nowUs = static_cast<uint64_t>(esp_timer_get_time());
     size_t skip = 0;
 
     while (true)
     {
-        const size_t n = g_pretrigger->summarize(nowUs, 5000000UL, recs, batchSize, skip);
+        const size_t n = g_pretrigger->summarize(nowUs, 5000000UL, recs, kPretriggerBatchCapacity, skip);
         const size_t bytes = wsBuildPretrigger(buf, sizeof(buf), recs, static_cast<uint8_t>(n));
         if ((n > 0 || skip == 0) && bytes > 0)
             ws.binaryAll(buf, bytes);
-        if (n < batchSize)
+        if (n < kPretriggerBatchCapacity)
             break;
         skip += n;
     }
@@ -137,8 +144,8 @@ void sendBaseline()
     if (!g_table || ws.count() == 0)
         return;
 
-    WsBaselineRecord recs[64];
-    uint8_t buf[kPushBufBytes];
+    static WsBaselineRecord recs[kBaselineBatchCapacity];
+    static uint8_t buf[kPushBufBytes];
     size_t n = 0;
 
     auto flush = [&]() {
@@ -159,7 +166,7 @@ void sendBaseline()
             recs[n].channel = ch;
             recs[n].id = static_cast<uint16_t>(id);
             ++n;
-            if (n >= 64)
+            if (n >= kBaselineBatchCapacity)
                 flush();
         }
     }
@@ -185,8 +192,20 @@ bool enqueuePendingCommand(const PendingCmd &cmd)
         g_pendingHead = next;
         queued = true;
     }
+    else
+    {
+        ++g_pendingDropped;
+    }
     portEXIT_CRITICAL(&g_pendingMux);
     return queued;
+}
+
+uint32_t pendingDroppedCount()
+{
+    portENTER_CRITICAL(&g_pendingMux);
+    const uint32_t dropped = g_pendingDropped;
+    portEXIT_CRITICAL(&g_pendingMux);
+    return dropped;
 }
 
 bool dequeuePendingCommand(PendingCmd &cmd)
@@ -383,8 +402,7 @@ void pushDelta()
         return;
 
     static uint8_t buf[kPushBufBytes];
-    constexpr size_t batchCapacity = 32;
-    WsFrameRecord batch[batchCapacity];
+    static WsFrameRecord batch[kFrameDeltaBatchCapacity];
     size_t batchN = 0;
     const uint64_t nowUs = static_cast<uint64_t>(esp_timer_get_time());
 
@@ -406,7 +424,7 @@ void pushDelta()
         const uint8_t channel = static_cast<uint8_t>(key / kStdIdCount);
         const uint32_t id = key % kStdIdCount;
         batch[batchN++] = toWire(channel, id, g_table->record(channel, id), nowUs);
-        if (batchN >= batchCapacity)
+        if (batchN >= kFrameDeltaBatchCapacity)
             flush();
     }
     flush();
@@ -455,6 +473,7 @@ void analyzerWebBegin()
         out += ",\"tx_b_enabled\":" + String(isAnalyzerChannelTxEnabled(1) ? "true" : "false");
         out += ",\"can_a_online\":" + String(isAnalyzerChannelOnline(0) ? "true" : "false");
         out += ",\"can_b_online\":" + String(isAnalyzerChannelOnline(1) ? "true" : "false");
+        out += ",\"pending_dropped\":" + String(pendingDroppedCount());
         out += "}";
         request->send(200, "application/json", out);
     });
