@@ -25,12 +25,32 @@ void test_upsert_overwrites_same_channel_and_id() {
     TEST_ASSERT_EQUAL_STRING("New", store.entries()[0].text);
 }
 
+void test_upsert_without_save_updates_in_memory() {
+    TEST_ASSERT_TRUE(store.upsert(0, 0x321, "Old"));
+
+    TEST_ASSERT_TRUE(store.upsert(0, 0x321, "New", false));
+
+    TEST_ASSERT_EQUAL_size_t(1, store.count());
+    TEST_ASSERT_EQUAL_STRING("New", store.entries()[0].text);
+}
+
 void test_upsert_empty_string_removes_entry() {
     TEST_ASSERT_TRUE(store.upsert(0, 0x111, "Keep"));
 
     TEST_ASSERT_TRUE(store.upsert(0, 0x111, ""));
 
     TEST_ASSERT_EQUAL_size_t(0, store.count());
+}
+
+void test_remove_without_save_updates_in_memory() {
+    TEST_ASSERT_TRUE(store.upsert(0, 0x100, "First"));
+    TEST_ASSERT_TRUE(store.upsert(0, 0x101, "Second"));
+
+    TEST_ASSERT_TRUE(store.remove(0, 0x100, false));
+
+    TEST_ASSERT_EQUAL_size_t(1, store.count());
+    TEST_ASSERT_EQUAL_UINT16(0x101, store.entries()[0].id);
+    TEST_ASSERT_EQUAL_STRING("Second", store.entries()[0].text);
 }
 
 void test_remove_shifts_remaining_entries() {
@@ -129,7 +149,9 @@ int main(int, char **) {
     UNITY_BEGIN();
     RUN_TEST(test_upsert_adds_entry);
     RUN_TEST(test_upsert_overwrites_same_channel_and_id);
+    RUN_TEST(test_upsert_without_save_updates_in_memory);
     RUN_TEST(test_upsert_empty_string_removes_entry);
+    RUN_TEST(test_remove_without_save_updates_in_memory);
     RUN_TEST(test_remove_shifts_remaining_entries);
     RUN_TEST(test_capacity_rejects_overflow);
     RUN_TEST(test_text_truncates_to_23_chars_and_nul);

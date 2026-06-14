@@ -81,8 +81,10 @@ bool labelUpsert(uint8_t channel, uint16_t id, const char *text)
         return false;
 
     portENTER_CRITICAL(&g_labelMux);
-    const bool updated = g_labels->upsert(channel, id, text);
+    const bool updated = g_labels->upsert(channel, id, text, false);
     portEXIT_CRITICAL(&g_labelMux);
+    if (updated)
+        g_labels->save();
     return updated;
 }
 
@@ -92,8 +94,10 @@ bool labelRemove(uint8_t channel, uint16_t id)
         return false;
 
     portENTER_CRITICAL(&g_labelMux);
-    const bool removed = g_labels->remove(channel, id);
+    const bool removed = g_labels->remove(channel, id, false);
     portEXIT_CRITICAL(&g_labelMux);
+    if (removed)
+        g_labels->save();
     return removed;
 }
 

@@ -65,11 +65,16 @@ bool LabelStore::loadEntries(const LabelEntry *entries, size_t count)
 
 bool LabelStore::upsert(uint8_t channel, uint16_t id, const char *text)
 {
+    return upsert(channel, id, text, true);
+}
+
+bool LabelStore::upsert(uint8_t channel, uint16_t id, const char *text, bool save)
+{
     if (channel > 1)
         return false;
 
     if (!text || text[0] == '\0')
-        return remove(channel, id);
+        return remove(channel, id, save);
 
     int index = find(channel, id);
     if (index < 0)
@@ -83,11 +88,17 @@ bool LabelStore::upsert(uint8_t channel, uint16_t id, const char *text)
 
     memset(entries_[index].text, 0, kLabelTextLen);
     strncpy(entries_[index].text, text, kLabelTextLen - 1);
-    persist();
+    if (save)
+        persist();
     return true;
 }
 
 bool LabelStore::remove(uint8_t channel, uint16_t id)
+{
+    return remove(channel, id, true);
+}
+
+bool LabelStore::remove(uint8_t channel, uint16_t id, bool save)
 {
     const int index = find(channel, id);
     if (index < 0)
@@ -98,8 +109,14 @@ bool LabelStore::remove(uint8_t channel, uint16_t id)
 
     --count_;
     entries_[count_] = LabelEntry{};
-    persist();
+    if (save)
+        persist();
     return true;
+}
+
+void LabelStore::save()
+{
+    persist();
 }
 
 const LabelEntry *LabelStore::entries() const

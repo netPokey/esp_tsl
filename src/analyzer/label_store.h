@@ -20,7 +20,10 @@ public:
     bool loadFromBlobForTest(const LabelEntry *entries, size_t count);
 #endif
     bool upsert(uint8_t channel, uint16_t id, const char *text);
+    bool upsert(uint8_t channel, uint16_t id, const char *text, bool save);
     bool remove(uint8_t channel, uint16_t id);
+    bool remove(uint8_t channel, uint16_t id, bool save);
+    void save();
     const LabelEntry *entries() const;
     size_t count() const;
 
