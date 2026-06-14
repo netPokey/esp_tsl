@@ -14,6 +14,20 @@
     <button id="tx-b-toggle">CAN_B TX</button>
     <span id="bus-health">CAN_A: ? · CAN_B: ?</span>
   </div>
+  <div class="controls p3-controls">
+    <button id="baseline-btn">baseline</button>
+    <button id="snapshot-a-btn">snapshot A</button>
+    <button id="snapshot-b-btn">snapshot B</button>
+    <button id="diff-btn">diff</button>
+    <button id="mark-btn">mark</button>
+    <label>通道 <select id="channel-filter"><option value="all">A+B</option><option value="A">A</option><option value="B">B</option></select></label>
+    <label>ID <input id="id-filter" type="text" placeholder="0x123"/></label>
+    <label>From <input id="range-from" type="text" placeholder="0x000"/></label>
+    <label>To <input id="range-to" type="text" placeholder="0x7FF"/></label>
+    <label>搜索 <input id="search-box" type="text" placeholder="ID / label"/></label>
+    <label><input id="whitelist-only" type="checkbox"/> 白名单优先</label>
+    <span id="p3-status"></span>
+  </div>
   <div class="controls">
     <label>进制 <select id="base-select"><option value="hex">HEX</option><option value="dec">DEC</option><option value="bin">BIN</option><option value="ascii">ASCII</option></select></label>
     <label><input id="suppress-static" type="checkbox"/> 静态抑制</label>
@@ -26,6 +40,18 @@
   <div class="grid">
     <section><h2>CAN_A</h2><table id="tbl-a"><thead><tr><th>ID</th><th>DLC</th><th>Data</th><th>计数</th><th>Δt</th><th>周期</th><th>抖动</th><th>活跃</th></tr></thead><tbody></tbody></table></section>
     <section><h2>CAN_B</h2><table id="tbl-b"><thead><tr><th>ID</th><th>DLC</th><th>Data</th><th>计数</th><th>Δt</th><th>周期</th><th>抖动</th><th>活跃</th></tr></thead><tbody></tbody></table></section>
+  </div>
+  <div class="grid p3-results">
+    <section>
+      <h2>Snapshot Diff</h2>
+      <div id="snapshot-summary" class="panel-summary">等待 diff…</div>
+      <table id="snapshot-diff"><thead><tr><th>通道</th><th>ID</th><th>类型</th><th>A DLC</th><th>A Data</th><th>B DLC</th><th>B Data</th></tr></thead><tbody></tbody></table>
+    </section>
+    <section>
+      <h2>Pretrigger</h2>
+      <div id="pretrigger-summary" class="panel-summary">等待 mark…</div>
+      <table id="pretrigger"><thead><tr><th>通道</th><th>ID</th><th>首见前</th><th>末见前</th><th>帧数</th><th>变更</th><th>Data</th></tr></thead><tbody></tbody></table>
+    </section>
   </div>
   <script src="app.js"></script>
 </body>

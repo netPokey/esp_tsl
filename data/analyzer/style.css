@@ -9,7 +9,9 @@ button { cursor: pointer; }
 button.on { background: #7f1d1d; border-color: #ef4444; color: #fff; }
 button:disabled { opacity: 0.4; cursor: not-allowed; }
 input[type="number"] { width: 56px; }
-#bus-health, #bus-stats { color: #aaa; }
+#id-filter, #range-from, #range-to { width: 76px; }
+#search-box { width: 130px; }
+#bus-health, #bus-stats, #p3-status { color: #aaa; }
 #status { padding: 6px 10px; color: #888; }
 .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 8px; }
 table { width: 100%; border-collapse: collapse; font-size: 12px; }
@@ -25,3 +27,13 @@ tr.activity-high { background: #331414; }
 .bit { display: inline-block; width: 1.3em; text-align: center; margin-right: 2px; border: 1px solid #333; }
 .bit.one { color: #fff; background: #1d4ed8; }
 .hidden { display: none; }
+.label-badge { display: inline-block; margin-left: 6px; padding: 0 4px; border: 1px solid #2563eb; border-radius: 3px; color: #bfdbfe; background: #172554; max-width: 160px; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; }
+.row-actions { display: inline-flex; gap: 2px; margin-left: 6px; }
+.row-actions button { padding: 0 3px; font-size: 10px; line-height: 14px; }
+tr.whitelisted { outline: 1px solid #22c55e; outline-offset: -1px; }
+tr.baselined { opacity: 0.45; }
+.panel-summary { color: #aaa; margin: 2px 0 6px; }
+.p3-results td:nth-child(5), .p3-results td:nth-child(7) { white-space: nowrap; }
+.kind-added { color: #86efac; }
+.kind-removed { color: #fca5a5; }
+.kind-changed { color: #fde68a; }
