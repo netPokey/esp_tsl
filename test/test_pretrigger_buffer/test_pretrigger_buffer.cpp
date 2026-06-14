@@ -143,6 +143,28 @@ void test_summarize_skips_extended_ids()
     TEST_ASSERT_EQUAL_UINT8(0x11, out[0].data[0]);
 }
 
+void test_summarize_supports_skip_for_batched_send()
+{
+    PretriggerBuffer buf;
+    CapturedFrame storage[8] = {};
+    buf.init(storage, 8);
+
+    buf.push(makeFrame(1000000ULL, 0, 0x100, 1, 0x11));
+    buf.push(makeFrame(2000000ULL, 0, 0x101, 1, 0x22));
+    buf.push(makeFrame(3000000ULL, 0, 0x102, 1, 0x33));
+
+    WsPretriggerRecord out[2] = {};
+    const size_t first = buf.summarize(3000000ULL, 5000000U, out, 2, 0);
+    TEST_ASSERT_EQUAL_size_t(2, first);
+    TEST_ASSERT_EQUAL_UINT16(0x100, out[0].id);
+    TEST_ASSERT_EQUAL_UINT16(0x101, out[1].id);
+
+    memset(out, 0, sizeof(out));
+    const size_t second = buf.summarize(3000000ULL, 5000000U, out, 2, 2);
+    TEST_ASSERT_EQUAL_size_t(1, second);
+    TEST_ASSERT_EQUAL_UINT16(0x102, out[0].id);
+}
+
 int main(int, char **)
 {
     UNITY_BEGIN();
@@ -152,5 +174,6 @@ int main(int, char **)
     RUN_TEST(test_summarize_groups_by_channel_id);
     RUN_TEST(test_summarize_updates_existing_records_when_cap_full);
     RUN_TEST(test_summarize_skips_extended_ids);
+    RUN_TEST(test_summarize_supports_skip_for_batched_send);
     return UNITY_END();
 }

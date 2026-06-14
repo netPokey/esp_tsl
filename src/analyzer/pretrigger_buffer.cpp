@@ -1,4 +1,5 @@
 #include "analyzer/pretrigger_buffer.h"
+#include "analyzer/id_table.h"
 #include <cstring>
 
 namespace
@@ -17,6 +18,16 @@ bool dataDiffers(const WsPretriggerRecord &record, const CapturedFrame &frame)
     if (record.dlc != dlc)
         return true;
     return memcmp(record.data, frame.data, dlc) != 0;
+}
+
+bool isSeen(const uint8_t *seen, size_t key)
+{
+    return (seen[key >> 3] & static_cast<uint8_t>(1u << (key & 7))) != 0;
+}
+
+void setSeen(uint8_t *seen, size_t key)
+{
+    seen[key >> 3] |= static_cast<uint8_t>(1u << (key & 7));
 }
 }
 
@@ -62,11 +73,18 @@ size_t PretriggerBuffer::collect(uint64_t now_us, uint32_t window_us, CapturedFr
 
 size_t PretriggerBuffer::summarize(uint64_t now_us, uint32_t window_us, WsPretriggerRecord *out, size_t cap) const
 {
+    return summarize(now_us, window_us, out, cap, 0);
+}
+
+size_t PretriggerBuffer::summarize(uint64_t now_us, uint32_t window_us, WsPretriggerRecord *out, size_t cap, size_t skip) const
+{
     if (storage_ == nullptr || out == nullptr || cap == 0 || capacity_ < 2)
         return 0;
 
     const uint64_t start = now_us > window_us ? now_us - window_us : 0;
     const size_t oldest = (head_ + capacity_ - count_) % capacity_;
+    uint8_t seen[kChannelCount * kStdIdCount / 8] = {};
+    size_t skipped = 0;
     size_t summaries = 0;
 
     for (size_t i = 0; i < count_; ++i)
@@ -74,9 +92,10 @@ size_t PretriggerBuffer::summarize(uint64_t now_us, uint32_t window_us, WsPretri
         const CapturedFrame &frame = storage_[(oldest + i) % capacity_];
         if (frame.ts_us < start || frame.ts_us > now_us)
             continue;
-        if (frame.id > 0x7FF)
+        if (frame.id >= kStdIdCount || frame.channel >= kChannelCount)
             continue;
 
+        const size_t key = static_cast<size_t>(frame.channel) * kStdIdCount + frame.id;
         const uint8_t dlc = frame.dlc <= 8 ? frame.dlc : 8;
         WsPretriggerRecord *record = nullptr;
         for (size_t j = 0; j < summaries; ++j)
@@ -90,8 +109,18 @@ size_t PretriggerBuffer::summarize(uint64_t now_us, uint32_t window_us, WsPretri
 
         if (record == nullptr)
         {
+            if (isSeen(seen, key))
+                continue;
+
+            setSeen(seen, key);
+            if (skipped < skip)
+            {
+                ++skipped;
+                continue;
+            }
             if (summaries >= cap)
                 continue;
+
             record = &out[summaries++];
             memset(record, 0, sizeof(*record));
             record->channel = frame.channel;

@@ -47,27 +47,36 @@ void sendSnapshotDiff()
     if (!g_snapshots || ws.count() == 0)
         return;
 
-    SnapshotDiffRecord diffs[64];
-    WsDiffRecord wire[64];
+    constexpr size_t batchSize = 64;
+    SnapshotDiffRecord diffs[batchSize];
+    WsDiffRecord wire[batchSize];
     uint8_t buf[kPushBufBytes];
-    const size_t n = g_snapshots->diff(diffs, 64);
-    for (size_t i = 0; i < n; ++i)
-    {
-        wire[i].channel = diffs[i].channel;
-        wire[i].id = diffs[i].id;
-        wire[i].kind = diffs[i].kind;
-        wire[i].dlc_a = diffs[i].dlc_a;
-        wire[i].dlc_b = diffs[i].dlc_b;
-        for (uint8_t b = 0; b < 8; ++b)
-        {
-            wire[i].data_a[b] = diffs[i].data_a[b];
-            wire[i].data_b[b] = diffs[i].data_b[b];
-        }
-    }
+    size_t skip = 0;
 
-    const size_t bytes = wsBuildSnapshotDiff(buf, sizeof(buf), wire, static_cast<uint8_t>(n));
-    if (bytes > 0)
-        ws.binaryAll(buf, bytes);
+    while (true)
+    {
+        const size_t n = g_snapshots->diff(diffs, batchSize, skip);
+        for (size_t i = 0; i < n; ++i)
+        {
+            wire[i].channel = diffs[i].channel;
+            wire[i].id = diffs[i].id;
+            wire[i].kind = diffs[i].kind;
+            wire[i].dlc_a = diffs[i].dlc_a;
+            wire[i].dlc_b = diffs[i].dlc_b;
+            for (uint8_t b = 0; b < 8; ++b)
+            {
+                wire[i].data_a[b] = diffs[i].data_a[b];
+                wire[i].data_b[b] = diffs[i].data_b[b];
+            }
+        }
+
+        const size_t bytes = wsBuildSnapshotDiff(buf, sizeof(buf), wire, static_cast<uint8_t>(n));
+        if ((n > 0 || skip == 0) && bytes > 0)
+            ws.binaryAll(buf, bytes);
+        if (n < batchSize)
+            break;
+        skip += n;
+    }
 }
 
 void sendPretrigger()
@@ -75,13 +84,22 @@ void sendPretrigger()
     if (!g_pretrigger || ws.count() == 0)
         return;
 
-    WsPretriggerRecord recs[64];
+    constexpr size_t batchSize = 64;
+    WsPretriggerRecord recs[batchSize];
     uint8_t buf[kPushBufBytes];
     const uint64_t nowUs = static_cast<uint64_t>(esp_timer_get_time());
-    const size_t n = g_pretrigger->summarize(nowUs, 5000000UL, recs, 64);
-    const size_t bytes = wsBuildPretrigger(buf, sizeof(buf), recs, static_cast<uint8_t>(n));
-    if (bytes > 0)
-        ws.binaryAll(buf, bytes);
+    size_t skip = 0;
+
+    while (true)
+    {
+        const size_t n = g_pretrigger->summarize(nowUs, 5000000UL, recs, batchSize, skip);
+        const size_t bytes = wsBuildPretrigger(buf, sizeof(buf), recs, static_cast<uint8_t>(n));
+        if ((n > 0 || skip == 0) && bytes > 0)
+            ws.binaryAll(buf, bytes);
+        if (n < batchSize)
+            break;
+        skip += n;
+    }
 }
 
 void sendBaseline()

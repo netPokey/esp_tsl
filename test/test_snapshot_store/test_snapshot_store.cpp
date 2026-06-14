@@ -1,4 +1,5 @@
 #include <unity.h>
+#include <cstring>
 #include "analyzer/snapshot_store.h"
 
 static IdRecord records[kChannelCount * kStdIdCount];
@@ -69,11 +70,31 @@ void test_diff_omits_identical_records() {
     TEST_ASSERT_EQUAL_size_t(0, store.diff(out, 8));
 }
 
+void test_diff_supports_skip_for_batched_send() {
+    store.capture(SnapshotSlot::A, table);
+    table.update(frame(0, 0x100, 0x11));
+    table.update(frame(0, 0x101, 0x22));
+    table.update(frame(0, 0x102, 0x33));
+    store.capture(SnapshotSlot::B, table);
+
+    SnapshotDiffRecord out[2]{};
+    const size_t first = store.diff(out, 2, 0);
+    TEST_ASSERT_EQUAL_size_t(2, first);
+    TEST_ASSERT_EQUAL_UINT16(0x100, out[0].id);
+    TEST_ASSERT_EQUAL_UINT16(0x101, out[1].id);
+
+    memset(out, 0, sizeof(out));
+    const size_t second = store.diff(out, 2, 2);
+    TEST_ASSERT_EQUAL_size_t(1, second);
+    TEST_ASSERT_EQUAL_UINT16(0x102, out[0].id);
+}
+
 int main(int, char **) {
     UNITY_BEGIN();
     RUN_TEST(test_diff_reports_added_id);
     RUN_TEST(test_diff_reports_removed_id);
     RUN_TEST(test_diff_reports_changed_data);
     RUN_TEST(test_diff_omits_identical_records);
+    RUN_TEST(test_diff_supports_skip_for_batched_send);
     return UNITY_END();
 }

@@ -37,6 +37,7 @@ public:
     void init(SnapshotRecord *slotA, SnapshotRecord *slotB);
     void capture(SnapshotSlot slot, const IdTable &table);
     size_t diff(SnapshotDiffRecord *out, size_t cap) const;
+    size_t diff(SnapshotDiffRecord *out, size_t cap, size_t skip) const;
 
 private:
     SnapshotRecord *a_ = nullptr;

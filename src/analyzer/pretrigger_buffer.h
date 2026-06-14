@@ -11,6 +11,7 @@ public:
     void push(const CapturedFrame &frame);
     size_t collect(uint64_t now_us, uint32_t window_us, CapturedFrame *out, size_t cap) const;
     size_t summarize(uint64_t now_us, uint32_t window_us, WsPretriggerRecord *out, size_t cap) const;
+    size_t summarize(uint64_t now_us, uint32_t window_us, WsPretriggerRecord *out, size_t cap, size_t skip) const;
 
 private:
     CapturedFrame *storage_ = nullptr;

@@ -34,10 +34,16 @@ void SnapshotStore::capture(SnapshotSlot slot, const IdTable &table)
 
 size_t SnapshotStore::diff(SnapshotDiffRecord *out, size_t cap) const
 {
+    return diff(out, cap, 0);
+}
+
+size_t SnapshotStore::diff(SnapshotDiffRecord *out, size_t cap, size_t skip) const
+{
     if (!a_ || !b_ || !out || cap == 0)
         return 0;
 
     size_t n = 0;
+    size_t skipped = 0;
     for (uint8_t ch = 0; ch < kChannelCount; ++ch)
     {
         for (uint32_t id = 0; id < kStdIdCount; ++id)
@@ -65,6 +71,11 @@ size_t SnapshotStore::diff(SnapshotDiffRecord *out, size_t cap) const
 
             if (!kind)
                 continue;
+            if (skipped < skip)
+            {
+                ++skipped;
+                continue;
+            }
             if (n >= cap)
                 return n;
 
