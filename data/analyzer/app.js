@@ -32,6 +32,8 @@ const records = {};
 const labels = new Map();
 const hidden = new Set();
 const whitelist = new Set();
+let snapshotDiffRows = [];
+let pretriggerRows = [];
 let ws = null;
 let txState = { master: false, a: false, b: false, onlineA: false, onlineB: false };
 
@@ -122,7 +124,7 @@ function passesLocalFilters(rec) {
   if (rangeTo.value.trim() && to === null) return false;
   if (from !== null && rec.id < from) return false;
   if (to !== null && rec.id > to) return false;
-  if (whitelistOnly.checked && whitelist.size > 0 && !whitelist.has(key)) return false;
+  if (whitelistOnly.checked && !whitelist.has(key)) return false;
   const q = searchBox.value.trim().toLowerCase();
   if (q) {
     const label = (labels.get(key) || '').toLowerCase();
@@ -131,6 +133,10 @@ function passesLocalFilters(rec) {
     if (!label.includes(q) && !idHex.includes(q) && !idBare.includes(q)) return false;
   }
   return true;
+}
+
+function passesP3Filter(rec) {
+  return passesLocalFilters({ ch: rec.ch, id: rec.id });
 }
 
 function rowHidden(rec) {
@@ -225,6 +231,8 @@ function sortTables() {
 function repaintAll() {
   for (const rec of Object.values(records)) paintRecord(rec);
   sortTables();
+  renderSnapshotDiffRows();
+  renderPretriggerRows();
 }
 
 function toggleWhitelist(rec) {
@@ -331,9 +339,53 @@ function appendIdWithLabel(tr, ch, id) {
   tr.appendChild(td);
 }
 
-function parseDiff(buf, dv, count) {
+function renderSnapshotDiffRows() {
   clearNode(snapshotBody);
   const totals = { added: 0, removed: 0, changed: 0 };
+  for (const row of snapshotDiffRows) {
+    if (!passesP3Filter(row)) continue;
+    const text = diffKindText(row.kind);
+    if (totals[text] !== undefined) totals[text]++;
+    const tr = document.createElement('tr');
+    appendCell(tr, channelName(row.ch));
+    appendIdWithLabel(tr, row.ch, row.id);
+    appendCell(tr, text, `kind-${text}`);
+    appendCell(tr, row.dlcA);
+    appendCell(tr, dataText(row.dataA, row.dlcA));
+    appendCell(tr, row.dlcB);
+    appendCell(tr, dataText(row.dataB, row.dlcB));
+    snapshotBody.appendChild(tr);
+  }
+  snapshotSummary.textContent = `added=${totals.added} removed=${totals.removed} changed=${totals.changed}`;
+}
+
+function renderPretriggerRows() {
+  clearNode(pretriggerBody);
+  let shown = 0;
+  let totalFrames = 0;
+  let totalChanges = 0;
+  const list = pretriggerRows
+    .filter(passesP3Filter)
+    .sort((a, b) => b.changes - a.changes || b.frames - a.frames || a.lastAgo - b.lastAgo || a.id - b.id);
+  for (const row of list) {
+    shown++;
+    totalFrames += row.frames;
+    totalChanges += row.changes;
+    const tr = document.createElement('tr');
+    appendCell(tr, channelName(row.ch));
+    appendIdWithLabel(tr, row.ch, row.id);
+    appendCell(tr, `${row.firstAgo}ms`);
+    appendCell(tr, `${row.lastAgo}ms`);
+    appendCell(tr, row.frames);
+    appendCell(tr, row.changes);
+    appendCell(tr, dataText(row.data, row.dlc));
+    pretriggerBody.appendChild(tr);
+  }
+  pretriggerSummary.textContent = `records=${shown} frames=${totalFrames} changes=${totalChanges}`;
+}
+
+function parseDiff(buf, dv, count) {
+  snapshotDiffRows = [];
   let o = 3;
   for (let i = 0; i < count; i++) {
     if (o + 21 > buf.byteLength) break;
@@ -344,28 +396,16 @@ function parseDiff(buf, dv, count) {
     const dataA = Array.from(new Uint8Array(buf.slice(o, o + 8))); o += 8;
     const dlcB = dv.getUint8(o); o += 1;
     const dataB = Array.from(new Uint8Array(buf.slice(o, o + 8))); o += 8;
-    const text = diffKindText(kind);
-    if (totals[text] !== undefined) totals[text]++;
-    const tr = document.createElement('tr');
-    appendCell(tr, channelName(ch));
-    appendIdWithLabel(tr, ch, id);
-    appendCell(tr, text, `kind-${text}`);
-    appendCell(tr, dlcA);
-    appendCell(tr, dataText(dataA, dlcA));
-    appendCell(tr, dlcB);
-    appendCell(tr, dataText(dataB, dlcB));
-    snapshotBody.appendChild(tr);
+    snapshotDiffRows.push({ ch, id, kind, dlcA, dataA, dlcB, dataB });
   }
-  snapshotSummary.textContent = `added=${totals.added} removed=${totals.removed} changed=${totals.changed}`;
+  renderSnapshotDiffRows();
 }
 
 function parsePretrigger(buf, dv, count) {
-  clearNode(pretriggerBody);
-  let totalFrames = 0;
-  let totalChanges = 0;
+  pretriggerRows = [];
   let o = 3;
   for (let i = 0; i < count; i++) {
-    if (o + 22 > buf.byteLength) break;
+    if (o + 20 > buf.byteLength) break;
     const ch = dv.getUint8(o); o += 1;
     const id = dv.getUint16(o, true); o += 2;
     const firstAgo = dv.getUint16(o, true); o += 2;
@@ -374,19 +414,9 @@ function parsePretrigger(buf, dv, count) {
     const changes = dv.getUint16(o, true); o += 2;
     const dlc = dv.getUint8(o); o += 1;
     const data = Array.from(new Uint8Array(buf.slice(o, o + 8))); o += 8;
-    totalFrames += frames;
-    totalChanges += changes;
-    const tr = document.createElement('tr');
-    appendCell(tr, channelName(ch));
-    appendIdWithLabel(tr, ch, id);
-    appendCell(tr, `${firstAgo}ms`);
-    appendCell(tr, `${lastAgo}ms`);
-    appendCell(tr, frames);
-    appendCell(tr, changes);
-    appendCell(tr, dataText(data, dlc));
-    pretriggerBody.appendChild(tr);
+    pretriggerRows.push({ ch, id, firstAgo, lastAgo, frames, changes, dlc, data });
   }
-  pretriggerSummary.textContent = `records=${count} frames=${totalFrames} changes=${totalChanges}`;
+  renderPretriggerRows();
 }
 
 function parseBaseline(buf, dv, count) {
