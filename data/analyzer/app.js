@@ -112,7 +112,9 @@ function rowClass(score) {
 
 function passesLocalFilters(rec) {
   const key = channelIdKey(rec.ch, rec.id);
-  if (hidden.has(key)) return false;
+  const isWhitelisted = whitelist.has(key);
+  if (whitelistOnly.checked && !isWhitelisted) return false;
+  if (!isWhitelisted && hidden.has(key)) return false;
   if (channelFilter.value === 'A' && rec.ch !== 0) return false;
   if (channelFilter.value === 'B' && rec.ch !== 1) return false;
   const exact = parseId(idFilter.value);
@@ -124,7 +126,6 @@ function passesLocalFilters(rec) {
   if (rangeTo.value.trim() && to === null) return false;
   if (from !== null && rec.id < from) return false;
   if (to !== null && rec.id > to) return false;
-  if (whitelistOnly.checked && !whitelist.has(key)) return false;
   const q = searchBox.value.trim().toLowerCase();
   if (q) {
     const label = (labels.get(key) || '').toLowerCase();
@@ -384,11 +385,20 @@ function renderPretriggerRows() {
   pretriggerSummary.textContent = `records=${shown} frames=${totalFrames} changes=${totalChanges}`;
 }
 
-function parseDiff(buf, dv, count) {
+function clearSnapshotResults() {
   snapshotDiffRows = [];
+  renderSnapshotDiffRows();
+}
+
+function clearPretriggerResults() {
+  pretriggerRows = [];
+  renderPretriggerRows();
+}
+
+function parseDiff(buf, dv, count) {
   let o = 3;
   for (let i = 0; i < count; i++) {
-    if (o + 21 > buf.byteLength) break;
+    if (o + 22 > buf.byteLength) break;
     const ch = dv.getUint8(o); o += 1;
     const id = dv.getUint16(o, true); o += 2;
     const kind = dv.getUint8(o); o += 1;
@@ -402,7 +412,6 @@ function parseDiff(buf, dv, count) {
 }
 
 function parsePretrigger(buf, dv, count) {
-  pretriggerRows = [];
   let o = 3;
   for (let i = 0; i < count; i++) {
     if (o + 20 > buf.byteLength) break;
@@ -418,6 +427,7 @@ function parsePretrigger(buf, dv, count) {
   }
   renderPretriggerRows();
 }
+
 
 function parseBaseline(buf, dv, count) {
   let added = 0;
@@ -516,11 +526,20 @@ txBToggle.onclick = async () => {
   refreshTxBanner();
 };
 banner.onclick = masterToggle.onclick;
-baselineBtn.onclick = () => sendCmd({ cmd: 'baseline' });
+baselineBtn.onclick = () => {
+  p3Status.textContent = 'baseline requested';
+  sendCmd({ cmd: 'baseline' });
+};
 snapABtn.onclick = () => sendCmd({ cmd: 'snapshot', slot: 'A' });
 snapBBtn.onclick = () => sendCmd({ cmd: 'snapshot', slot: 'B' });
-diffBtn.onclick = () => sendCmd({ cmd: 'diff' });
-markBtn.onclick = () => sendCmd({ cmd: 'mark' });
+diffBtn.onclick = () => {
+  clearSnapshotResults();
+  sendCmd({ cmd: 'diff' });
+};
+markBtn.onclick = () => {
+  clearPretriggerResults();
+  sendCmd({ cmd: 'mark' });
+};
 baseSelect.onchange = repaintAll;
 suppressStatic.onchange = repaintAll;
 staticSeconds.onchange = repaintAll;
