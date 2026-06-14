@@ -26,10 +26,15 @@ constexpr uint32_t kDirtyKeys = static_cast<uint32_t>(kChannelCount) * kStdIdCou
 uint8_t g_dirty[kDirtyKeys / 8] = {};
 
 constexpr size_t kPushBufBytes = 1400;
-constexpr size_t kFrameDeltaBatchCapacity = (kPushBufBytes - 2) / sizeof(WsFrameRecord);
-constexpr size_t kSnapshotDiffBatchCapacity = (kPushBufBytes - 3) / sizeof(WsDiffRecord);
-constexpr size_t kPretriggerBatchCapacity = (kPushBufBytes - 3) / sizeof(WsPretriggerRecord);
-constexpr size_t kBaselineBatchCapacity = (kPushBufBytes - 3) / sizeof(WsBaselineRecord);
+constexpr size_t kMaxWsBatchRecords = 255;
+constexpr size_t wsBatchCapacity(size_t byteCapacity)
+{
+    return byteCapacity < kMaxWsBatchRecords ? byteCapacity : kMaxWsBatchRecords;
+}
+constexpr size_t kFrameDeltaBatchCapacity = wsBatchCapacity((kPushBufBytes - 2) / sizeof(WsFrameRecord));
+constexpr size_t kSnapshotDiffBatchCapacity = wsBatchCapacity((kPushBufBytes - 3) / sizeof(WsDiffRecord));
+constexpr size_t kPretriggerBatchCapacity = wsBatchCapacity((kPushBufBytes - 3) / sizeof(WsPretriggerRecord));
+constexpr size_t kBaselineBatchCapacity = wsBatchCapacity((kPushBufBytes - 3) / sizeof(WsBaselineRecord));
 static_assert(kFrameDeltaBatchCapacity >= 1, "frame delta batch capacity must be non-zero");
 static_assert(kSnapshotDiffBatchCapacity >= 1, "snapshot diff batch capacity must be non-zero");
 static_assert(kPretriggerBatchCapacity >= 1, "pretrigger batch capacity must be non-zero");
@@ -68,6 +73,43 @@ volatile size_t g_pendingHead = 0;
 volatile size_t g_pendingTail = 0;
 uint32_t g_pendingDropped = 0;
 portMUX_TYPE g_pendingMux = portMUX_INITIALIZER_UNLOCKED;
+portMUX_TYPE g_labelMux = portMUX_INITIALIZER_UNLOCKED;
+
+bool labelUpsert(uint8_t channel, uint16_t id, const char *text)
+{
+    if (!g_labels)
+        return false;
+
+    portENTER_CRITICAL(&g_labelMux);
+    const bool updated = g_labels->upsert(channel, id, text);
+    portEXIT_CRITICAL(&g_labelMux);
+    return updated;
+}
+
+bool labelRemove(uint8_t channel, uint16_t id)
+{
+    if (!g_labels)
+        return false;
+
+    portENTER_CRITICAL(&g_labelMux);
+    const bool removed = g_labels->remove(channel, id);
+    portEXIT_CRITICAL(&g_labelMux);
+    return removed;
+}
+
+size_t copyLabels(LabelEntry *out, size_t capacity)
+{
+    if (!g_labels || !out || capacity == 0)
+        return 0;
+
+    portENTER_CRITICAL(&g_labelMux);
+    const size_t count = g_labels->count() < capacity ? g_labels->count() : capacity;
+    const LabelEntry *entries = g_labels->entries();
+    for (size_t i = 0; i < count; ++i)
+        out[i] = entries[i];
+    portEXIT_CRITICAL(&g_labelMux);
+    return count;
+}
 
 void sendLabelUpdateNotice()
 {
@@ -247,11 +289,11 @@ void processPendingCommand(const PendingCmd &cmd)
         sendPretrigger();
         break;
     case PendingCmdType::LabelSet:
-        if (g_labels && g_labels->upsert(cmd.channel, cmd.id, cmd.text))
+        if (labelUpsert(cmd.channel, cmd.id, cmd.text))
             sendLabelUpdateNotice();
         break;
     case PendingCmdType::LabelDelete:
-        if (g_labels && g_labels->remove(cmd.channel, cmd.id))
+        if (labelRemove(cmd.channel, cmd.id))
             sendLabelUpdateNotice();
         break;
     }
@@ -506,18 +548,17 @@ void analyzerWebBegin()
               });
 
     server.on("/api/labels", HTTP_GET, [](AsyncWebServerRequest *request) {
+        LabelEntry snapshot[kMaxLabels];
+        const size_t labelCount = copyLabels(snapshot, kMaxLabels);
+
         JsonDocument doc;
         JsonArray labels = doc.to<JsonArray>();
-        if (g_labels)
+        for (size_t i = 0; i < labelCount; ++i)
         {
-            const LabelEntry *entries = g_labels->entries();
-            for (size_t i = 0; i < g_labels->count(); ++i)
-            {
-                JsonObject label = labels.createNestedObject();
-                label["ch"] = entries[i].channel == 1 ? "B" : "A";
-                label["id"] = entries[i].id;
-                label["text"] = entries[i].text;
-            }
+            JsonObject label = labels.createNestedObject();
+            label["ch"] = snapshot[i].channel == 1 ? "B" : "A";
+            label["id"] = snapshot[i].id;
+            label["text"] = snapshot[i].text;
         }
 
         String out;
