@@ -68,24 +68,37 @@ void test_text_truncates_to_23_chars_and_nul() {
     TEST_ASSERT_EQUAL_size_t(kLabelTextLen - 1, strlen(store.entries()[0].text));
 }
 
-void test_load_from_blob_rejects_invalid_channel_and_empty_text() {
-    LabelEntry entries[3] = {};
-    entries[0].channel = 2;
-    entries[0].id = 0x100;
-    strcpy(entries[0].text, "bad-channel");
-    entries[1].channel = 0;
-    entries[1].id = 0x101;
-    entries[1].text[0] = '\0';
-    entries[2].channel = 1;
-    entries[2].id = 0x102;
-    strcpy(entries[2].text, "ok");
+void test_invalid_blob_preserves_existing_labels() {
+    TEST_ASSERT_TRUE(store.upsert(0, 0x10, "keep"));
 
-    TEST_ASSERT_TRUE(store.loadFromBlobForTest(entries, 3));
+    LabelEntry entries[3] = {};
+    entries[0].channel = 1;
+    entries[0].id = 0x100;
+    strcpy(entries[0].text, "valid-before-invalid");
+    entries[1].channel = 2;
+    entries[1].id = 0x101;
+    strcpy(entries[1].text, "bad-channel");
+    entries[2].channel = 0;
+    entries[2].id = 0x102;
+    entries[2].text[0] = '\0';
+
+    TEST_ASSERT_FALSE(store.loadFromBlobForTest(entries, 3));
+
+    TEST_ASSERT_EQUAL_size_t(1, store.count());
+    TEST_ASSERT_EQUAL_UINT8(0, store.entries()[0].channel);
+    TEST_ASSERT_EQUAL_UINT16(0x10, store.entries()[0].id);
+    TEST_ASSERT_EQUAL_STRING("keep", store.entries()[0].text);
+}
+
+void test_upsert_rejects_invalid_channel() {
+    TEST_ASSERT_TRUE(store.upsert(1, 0x120, "keep"));
+
+    TEST_ASSERT_FALSE(store.upsert(2, 0x121, "bad-channel"));
 
     TEST_ASSERT_EQUAL_size_t(1, store.count());
     TEST_ASSERT_EQUAL_UINT8(1, store.entries()[0].channel);
-    TEST_ASSERT_EQUAL_UINT16(0x102, store.entries()[0].id);
-    TEST_ASSERT_EQUAL_STRING("ok", store.entries()[0].text);
+    TEST_ASSERT_EQUAL_UINT16(0x120, store.entries()[0].id);
+    TEST_ASSERT_EQUAL_STRING("keep", store.entries()[0].text);
 }
 
 void test_load_from_blob_forces_text_termination() {
@@ -120,7 +133,8 @@ int main(int, char **) {
     RUN_TEST(test_remove_shifts_remaining_entries);
     RUN_TEST(test_capacity_rejects_overflow);
     RUN_TEST(test_text_truncates_to_23_chars_and_nul);
-    RUN_TEST(test_load_from_blob_rejects_invalid_channel_and_empty_text);
+    RUN_TEST(test_invalid_blob_preserves_existing_labels);
+    RUN_TEST(test_upsert_rejects_invalid_channel);
     RUN_TEST(test_load_from_blob_forces_text_termination);
     RUN_TEST(test_failed_load_preserves_existing_labels);
     return UNITY_END();

@@ -16,7 +16,9 @@ class LabelStore
 {
 public:
     void begin();
+#if !defined(ARDUINO)
     bool loadFromBlobForTest(const LabelEntry *entries, size_t count);
+#endif
     bool upsert(uint8_t channel, uint16_t id, const char *text);
     bool remove(uint8_t channel, uint16_t id);
     const LabelEntry *entries() const;

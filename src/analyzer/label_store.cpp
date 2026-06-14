@@ -30,10 +30,12 @@ void LabelStore::begin()
 #endif
 }
 
+#if !defined(ARDUINO)
 bool LabelStore::loadFromBlobForTest(const LabelEntry *entries, size_t count)
 {
     return loadEntries(entries, count);
 }
+#endif
 
 bool LabelStore::loadEntries(const LabelEntry *entries, size_t count)
 {
@@ -41,29 +43,31 @@ bool LabelStore::loadEntries(const LabelEntry *entries, size_t count)
         return false;
 
     LabelEntry sanitized[kMaxLabels] = {};
-    size_t sanitizedCount = 0;
 
     for (size_t i = 0; i < count; ++i)
     {
         if (entries[i].channel > 1)
-            continue;
+            return false;
 
         LabelEntry entry = entries[i];
         entry.text[kLabelTextLen - 1] = '\0';
         if (entry.text[0] == '\0')
-            continue;
+            return false;
 
-        sanitized[sanitizedCount++] = entry;
+        sanitized[i] = entry;
     }
 
     memset(entries_, 0, sizeof(entries_));
     memcpy(entries_, sanitized, sizeof(sanitized));
-    count_ = sanitizedCount;
+    count_ = count;
     return true;
 }
 
 bool LabelStore::upsert(uint8_t channel, uint16_t id, const char *text)
 {
+    if (channel > 1)
+        return false;
+
     if (!text || text[0] == '\0')
         return remove(channel, id);
 
@@ -121,14 +125,10 @@ int LabelStore::find(uint8_t channel, uint16_t id) const
 void LabelStore::persist()
 {
 #if defined(ARDUINO)
-    PersistedLabels persisted{};
-    persisted.count = count_;
-    memcpy(persisted.entries, entries_, sizeof(entries_));
-
     Preferences prefs;
     if (!prefs.begin("analyzer", false))
         return;
-    prefs.putBytes("labels", &persisted, sizeof(persisted));
+    prefs.putBytes("labels", entries_, count_ * sizeof(LabelEntry));
     prefs.end();
 #endif
 }
