@@ -74,6 +74,8 @@ size_t PretriggerBuffer::summarize(uint64_t now_us, uint32_t window_us, WsPretri
         const CapturedFrame &frame = storage_[(oldest + i) % capacity_];
         if (frame.ts_us < start || frame.ts_us > now_us)
             continue;
+        if (frame.id > 0x7FF)
+            continue;
 
         const uint8_t dlc = frame.dlc <= 8 ? frame.dlc : 8;
         WsPretriggerRecord *record = nullptr;
@@ -93,7 +95,7 @@ size_t PretriggerBuffer::summarize(uint64_t now_us, uint32_t window_us, WsPretri
             record = &out[summaries++];
             memset(record, 0, sizeof(*record));
             record->channel = frame.channel;
-            record->id = static_cast<uint16_t>(frame.id);
+            record->id = frame.id;
             record->first_seen_ms_ago = elapsedMsAgo(now_us, frame.ts_us);
             record->frames = 1;
             record->dlc = dlc;

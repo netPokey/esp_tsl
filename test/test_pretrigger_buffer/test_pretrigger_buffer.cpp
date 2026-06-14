@@ -103,6 +103,46 @@ void test_summarize_groups_by_channel_id()
     TEST_ASSERT_EQUAL_UINT16(200, out[1].last_seen_ms_ago);
 }
 
+void test_summarize_updates_existing_records_when_cap_full()
+{
+    PretriggerBuffer buf;
+    CapturedFrame storage[8] = {};
+    buf.init(storage, 8);
+
+    buf.push(makeFrame(1000000ULL, 0, 0x100, 1, 0x01));
+    buf.push(makeFrame(2000000ULL, 1, 0x200, 1, 0x09));
+    buf.push(makeFrame(3000000ULL, 0, 0x100, 1, 0x02));
+
+    WsPretriggerRecord out[1] = {};
+    const size_t n = buf.summarize(3000000ULL, 5000000U, out, 1);
+
+    TEST_ASSERT_EQUAL_size_t(1, n);
+    TEST_ASSERT_EQUAL_UINT8(0, out[0].channel);
+    TEST_ASSERT_EQUAL_UINT16(0x100, out[0].id);
+    TEST_ASSERT_EQUAL_UINT16(2, out[0].frames);
+    TEST_ASSERT_EQUAL_UINT16(1, out[0].changes);
+    TEST_ASSERT_EQUAL_UINT8(0x02, out[0].data[0]);
+}
+
+void test_summarize_skips_extended_ids()
+{
+    PretriggerBuffer buf;
+    CapturedFrame storage[8] = {};
+    buf.init(storage, 8);
+
+    buf.push(makeFrame(1000000ULL, 0, 0x800, 1, 0xEE));
+    buf.push(makeFrame(2000000ULL, 0, 0x100, 1, 0x11));
+
+    WsPretriggerRecord out[8] = {};
+    const size_t n = buf.summarize(2000000ULL, 5000000U, out, 8);
+
+    TEST_ASSERT_EQUAL_size_t(1, n);
+    TEST_ASSERT_EQUAL_UINT8(0, out[0].channel);
+    TEST_ASSERT_EQUAL_UINT16(0x100, out[0].id);
+    TEST_ASSERT_EQUAL_UINT16(1, out[0].frames);
+    TEST_ASSERT_EQUAL_UINT8(0x11, out[0].data[0]);
+}
+
 int main(int, char **)
 {
     UNITY_BEGIN();
@@ -110,5 +150,7 @@ int main(int, char **)
     RUN_TEST(test_collect_excludes_frames_older_than_window);
     RUN_TEST(test_ring_overwrites_oldest_when_full);
     RUN_TEST(test_summarize_groups_by_channel_id);
+    RUN_TEST(test_summarize_updates_existing_records_when_cap_full);
+    RUN_TEST(test_summarize_skips_extended_ids);
     return UNITY_END();
 }
