@@ -9,6 +9,14 @@ enum WsMsgType : uint8_t
     WS_MSG_DIFF = 0x03,
 };
 
+enum WsDiffSubtype : uint8_t
+{
+    WS_DIFF_SNAPSHOT = 0x01,
+    WS_DIFF_PRETRIGGER = 0x02,
+    WS_DIFF_BASELINE = 0x03,
+    WS_DIFF_LABELS = 0x04,
+};
+
 #pragma pack(push, 1)
 struct WsFrameRecord
 {
@@ -50,7 +58,27 @@ struct WsPretriggerRecord
     uint8_t dlc;
     uint8_t data[8];
 };
+
+struct WsDiffRecord
+{
+    uint8_t channel;
+    uint16_t id;
+    uint8_t kind;
+    uint8_t dlc_a;
+    uint8_t data_a[8];
+    uint8_t dlc_b;
+    uint8_t data_b[8];
+};
+
+struct WsBaselineRecord
+{
+    uint8_t channel;
+    uint16_t id;
+};
 #pragma pack(pop)
 
 size_t wsBuildFrameDelta(uint8_t *buf, size_t cap, const WsFrameRecord *recs, uint8_t count);
 size_t wsBuildBusStats(uint8_t *buf, size_t cap, const WsBusStats &stats);
+size_t wsBuildSnapshotDiff(uint8_t *buf, size_t cap, const WsDiffRecord *recs, uint8_t count);
+size_t wsBuildPretrigger(uint8_t *buf, size_t cap, const WsPretriggerRecord *recs, uint8_t count);
+size_t wsBuildBaseline(uint8_t *buf, size_t cap, const WsBaselineRecord *recs, uint8_t count);

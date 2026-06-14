@@ -66,11 +66,101 @@ void test_bus_stats_layout()
     TEST_ASSERT_EQUAL_UINT32(7, out->dropped);
 }
 
+void test_snapshot_diff_layout()
+{
+    WsDiffRecord rec;
+    memset(&rec, 0, sizeof(rec));
+    rec.channel = 1;
+    rec.id = 0x456;
+    rec.kind = 0xA5;
+    rec.dlc_a = 3;
+    rec.data_a[0] = 0x11;
+    rec.data_a[1] = 0x22;
+    rec.data_a[2] = 0x33;
+    rec.dlc_b = 4;
+    rec.data_b[0] = 0x44;
+    rec.data_b[1] = 0x55;
+    rec.data_b[2] = 0x66;
+    rec.data_b[3] = 0x77;
+
+    uint8_t buf[128];
+    const size_t n = wsBuildSnapshotDiff(buf, sizeof(buf), &rec, 1);
+
+    TEST_ASSERT_EQUAL_UINT8(WS_MSG_DIFF, buf[0]);
+    TEST_ASSERT_EQUAL_UINT8(WS_DIFF_SNAPSHOT, buf[1]);
+    TEST_ASSERT_EQUAL_UINT8(1, buf[2]);
+    TEST_ASSERT_EQUAL_size_t(3 + sizeof(WsDiffRecord), n);
+    const WsDiffRecord *out = reinterpret_cast<const WsDiffRecord *>(buf + 3);
+    TEST_ASSERT_EQUAL_UINT8(1, out->channel);
+    TEST_ASSERT_EQUAL_UINT16(0x456, out->id);
+    TEST_ASSERT_EQUAL_UINT8(0xA5, out->kind);
+    TEST_ASSERT_EQUAL_UINT8(3, out->dlc_a);
+    TEST_ASSERT_EQUAL_UINT8(0x22, out->data_a[1]);
+    TEST_ASSERT_EQUAL_UINT8(4, out->dlc_b);
+    TEST_ASSERT_EQUAL_UINT8(0x66, out->data_b[2]);
+}
+
+void test_pretrigger_layout_and_cap()
+{
+    WsPretriggerRecord recs[4];
+    memset(recs, 0, sizeof(recs));
+    recs[0].channel = 0;
+    recs[0].id = 0x123;
+    recs[0].first_seen_ms_ago = 1000;
+    recs[0].last_seen_ms_ago = 25;
+    recs[0].frames = 7;
+    recs[0].changes = 2;
+    recs[0].dlc = 2;
+    recs[0].data[0] = 0xAB;
+    recs[0].data[1] = 0xCD;
+    recs[1].id = 0x456;
+
+    uint8_t buf[3 + sizeof(WsPretriggerRecord) + 1];
+    const size_t n = wsBuildPretrigger(buf, sizeof(buf), recs, 4);
+
+    TEST_ASSERT_EQUAL_UINT8(WS_MSG_DIFF, buf[0]);
+    TEST_ASSERT_EQUAL_UINT8(WS_DIFF_PRETRIGGER, buf[1]);
+    TEST_ASSERT_EQUAL_UINT8(1, buf[2]);
+    TEST_ASSERT_EQUAL_size_t(3 + sizeof(WsPretriggerRecord), n);
+    const WsPretriggerRecord *out = reinterpret_cast<const WsPretriggerRecord *>(buf + 3);
+    TEST_ASSERT_EQUAL_UINT16(0x123, out->id);
+    TEST_ASSERT_EQUAL_UINT16(1000, out->first_seen_ms_ago);
+    TEST_ASSERT_EQUAL_UINT16(25, out->last_seen_ms_ago);
+    TEST_ASSERT_EQUAL_UINT16(7, out->frames);
+    TEST_ASSERT_EQUAL_UINT16(2, out->changes);
+    TEST_ASSERT_EQUAL_UINT8(0xCD, out->data[1]);
+}
+
+void test_baseline_layout()
+{
+    WsBaselineRecord recs[2];
+    recs[0].channel = 0;
+    recs[0].id = 0x111;
+    recs[1].channel = 1;
+    recs[1].id = 0x222;
+
+    uint8_t buf[64];
+    const size_t n = wsBuildBaseline(buf, sizeof(buf), recs, 2);
+
+    TEST_ASSERT_EQUAL_UINT8(WS_MSG_DIFF, buf[0]);
+    TEST_ASSERT_EQUAL_UINT8(WS_DIFF_BASELINE, buf[1]);
+    TEST_ASSERT_EQUAL_UINT8(2, buf[2]);
+    TEST_ASSERT_EQUAL_size_t(3 + 2 * sizeof(WsBaselineRecord), n);
+    const WsBaselineRecord *out = reinterpret_cast<const WsBaselineRecord *>(buf + 3);
+    TEST_ASSERT_EQUAL_UINT8(0, out[0].channel);
+    TEST_ASSERT_EQUAL_UINT16(0x111, out[0].id);
+    TEST_ASSERT_EQUAL_UINT8(1, out[1].channel);
+    TEST_ASSERT_EQUAL_UINT16(0x222, out[1].id);
+}
+
 int main(int, char **)
 {
     UNITY_BEGIN();
     RUN_TEST(test_frame_delta_header_and_one_record);
     RUN_TEST(test_frame_delta_respects_buffer_cap);
     RUN_TEST(test_bus_stats_layout);
+    RUN_TEST(test_snapshot_diff_layout);
+    RUN_TEST(test_pretrigger_layout_and_cap);
+    RUN_TEST(test_baseline_layout);
     return UNITY_END();
 }
