@@ -100,6 +100,48 @@ void test_snapshot_diff_layout()
     TEST_ASSERT_EQUAL_UINT8(0x66, out->data_b[2]);
 }
 
+void test_diff_builders_allow_zero_count_null_records()
+{
+    uint8_t buf[8];
+    memset(buf, 0xCC, sizeof(buf));
+
+    const size_t n = wsBuildSnapshotDiff(buf, sizeof(buf), nullptr, 0);
+
+    TEST_ASSERT_EQUAL_size_t(3, n);
+    TEST_ASSERT_EQUAL_UINT8(WS_MSG_DIFF, buf[0]);
+    TEST_ASSERT_EQUAL_UINT8(WS_DIFF_SNAPSHOT, buf[1]);
+    TEST_ASSERT_EQUAL_UINT8(0, buf[2]);
+    TEST_ASSERT_EQUAL_UINT8(0xCC, buf[3]);
+}
+
+void test_diff_builders_reject_too_small_cap()
+{
+    WsDiffRecord rec;
+    memset(&rec, 0, sizeof(rec));
+    uint8_t buf[2];
+    memset(buf, 0xCC, sizeof(buf));
+
+    const size_t n = wsBuildSnapshotDiff(buf, sizeof(buf), &rec, 1);
+
+    TEST_ASSERT_EQUAL_size_t(0, n);
+}
+
+void test_diff_builders_exact_header_cap()
+{
+    WsDiffRecord rec;
+    memset(&rec, 0, sizeof(rec));
+    rec.channel = 1;
+    rec.id = 0x456;
+    uint8_t buf[3];
+
+    const size_t n = wsBuildSnapshotDiff(buf, sizeof(buf), &rec, 1);
+
+    TEST_ASSERT_EQUAL_size_t(3, n);
+    TEST_ASSERT_EQUAL_UINT8(WS_MSG_DIFF, buf[0]);
+    TEST_ASSERT_EQUAL_UINT8(WS_DIFF_SNAPSHOT, buf[1]);
+    TEST_ASSERT_EQUAL_UINT8(0, buf[2]);
+}
+
 void test_pretrigger_layout_and_cap()
 {
     WsPretriggerRecord recs[4];
@@ -153,6 +195,26 @@ void test_baseline_layout()
     TEST_ASSERT_EQUAL_UINT16(0x222, out[1].id);
 }
 
+void test_baseline_respects_buffer_cap()
+{
+    WsBaselineRecord recs[2];
+    recs[0].channel = 0;
+    recs[0].id = 0x111;
+    recs[1].channel = 1;
+    recs[1].id = 0x222;
+
+    uint8_t buf[3 + sizeof(WsBaselineRecord) + 1];
+    const size_t n = wsBuildBaseline(buf, sizeof(buf), recs, 2);
+
+    TEST_ASSERT_EQUAL_size_t(3 + sizeof(WsBaselineRecord), n);
+    TEST_ASSERT_EQUAL_UINT8(WS_MSG_DIFF, buf[0]);
+    TEST_ASSERT_EQUAL_UINT8(WS_DIFF_BASELINE, buf[1]);
+    TEST_ASSERT_EQUAL_UINT8(1, buf[2]);
+    const WsBaselineRecord *out = reinterpret_cast<const WsBaselineRecord *>(buf + 3);
+    TEST_ASSERT_EQUAL_UINT8(0, out[0].channel);
+    TEST_ASSERT_EQUAL_UINT16(0x111, out[0].id);
+}
+
 int main(int, char **)
 {
     UNITY_BEGIN();
@@ -160,7 +222,11 @@ int main(int, char **)
     RUN_TEST(test_frame_delta_respects_buffer_cap);
     RUN_TEST(test_bus_stats_layout);
     RUN_TEST(test_snapshot_diff_layout);
+    RUN_TEST(test_diff_builders_allow_zero_count_null_records);
+    RUN_TEST(test_diff_builders_reject_too_small_cap);
+    RUN_TEST(test_diff_builders_exact_header_cap);
     RUN_TEST(test_pretrigger_layout_and_cap);
     RUN_TEST(test_baseline_layout);
+    RUN_TEST(test_baseline_respects_buffer_cap);
     return UNITY_END();
 }

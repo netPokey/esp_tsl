@@ -44,7 +44,8 @@ size_t wsBuildDiffRecords(uint8_t *buf, size_t cap, WsDiffSubtype subtype, const
     buf[0] = WS_MSG_DIFF;
     buf[1] = subtype;
     buf[2] = static_cast<uint8_t>(maxByCap);
-    memcpy(buf + 3, recs, maxByCap * recSize);
+    if (maxByCap > 0)
+        memcpy(buf + 3, recs, maxByCap * recSize);
     return 3 + maxByCap * recSize;
 }
 }
