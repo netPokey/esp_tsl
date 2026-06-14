@@ -8,6 +8,7 @@
 #include <ESPAsyncWebServer.h>
 #include <LittleFS.h>
 #include <esp_timer.h>
+#include <freertos/FreeRTOS.h>
 
 namespace
 {
@@ -29,6 +30,35 @@ uint32_t g_lastPushMs = 0;
 uint32_t g_lastStatsMs = 0;
 constexpr uint32_t kPushIntervalMs = 66;
 constexpr uint32_t kStatsIntervalMs = 1000;
+
+enum class PendingCmdType : uint8_t
+{
+    TxMaster,
+    TxEnable,
+    Snapshot,
+    Diff,
+    Baseline,
+    Mark,
+    LabelSet,
+    LabelDelete
+};
+
+struct PendingCmd
+{
+    PendingCmdType type = PendingCmdType::Diff;
+    uint8_t channel = 0;
+    bool on = false;
+    SnapshotSlot slot = SnapshotSlot::A;
+    uint16_t id = 0;
+    char text[kLabelTextLen] = {};
+};
+
+constexpr size_t kPendingCmdCap = 8;
+constexpr size_t kMaxWsCommandBytes = 256;
+PendingCmd g_pending[kPendingCmdCap];
+volatile size_t g_pendingHead = 0;
+volatile size_t g_pendingTail = 0;
+portMUX_TYPE g_pendingMux = portMUX_INITIALIZER_UNLOCKED;
 
 void sendLabelUpdateNotice()
 {
@@ -143,6 +173,78 @@ void markDirty(uint8_t channel, uint32_t id)
         g_dirty[key >> 3] |= static_cast<uint8_t>(1u << (key & 7));
 }
 
+bool enqueuePendingCommand(const PendingCmd &cmd)
+{
+    bool queued = false;
+    portENTER_CRITICAL(&g_pendingMux);
+    const size_t head = g_pendingHead;
+    const size_t next = (head + 1) % kPendingCmdCap;
+    if (next != g_pendingTail)
+    {
+        g_pending[head] = cmd;
+        g_pendingHead = next;
+        queued = true;
+    }
+    portEXIT_CRITICAL(&g_pendingMux);
+    return queued;
+}
+
+bool dequeuePendingCommand(PendingCmd &cmd)
+{
+    bool found = false;
+    portENTER_CRITICAL(&g_pendingMux);
+    const size_t tail = g_pendingTail;
+    if (tail != g_pendingHead)
+    {
+        cmd = g_pending[tail];
+        g_pendingTail = (tail + 1) % kPendingCmdCap;
+        found = true;
+    }
+    portEXIT_CRITICAL(&g_pendingMux);
+    return found;
+}
+
+void processPendingCommand(const PendingCmd &cmd)
+{
+    switch (cmd.type)
+    {
+    case PendingCmdType::TxMaster:
+        setCanTxEnabled(cmd.on);
+        break;
+    case PendingCmdType::TxEnable:
+        setAnalyzerChannelTxEnabled(cmd.channel, cmd.on);
+        break;
+    case PendingCmdType::Snapshot:
+        if (g_snapshots && g_table)
+            g_snapshots->capture(cmd.slot, *g_table);
+        break;
+    case PendingCmdType::Diff:
+        sendSnapshotDiff();
+        break;
+    case PendingCmdType::Baseline:
+        sendBaseline();
+        break;
+    case PendingCmdType::Mark:
+        sendPretrigger();
+        break;
+    case PendingCmdType::LabelSet:
+        if (g_labels && g_labels->upsert(cmd.channel, cmd.id, cmd.text))
+            sendLabelUpdateNotice();
+        break;
+    case PendingCmdType::LabelDelete:
+        if (g_labels && g_labels->remove(cmd.channel, cmd.id))
+            sendLabelUpdateNotice();
+        break;
+    }
+}
+
+void processPendingCommands()
+{
+    PendingCmd cmd;
+    while (dequeuePendingCommand(cmd))
+        processPendingCommand(cmd);
+}
+
 void handleCommand(const char *text, size_t len)
 {
     JsonDocument doc;
@@ -150,64 +252,86 @@ void handleCommand(const char *text, size_t len)
         return;
 
     const char *cmd = doc["cmd"] | "";
+    PendingCmd pending;
     if (strcmp(cmd, "tx_master") == 0)
     {
-        setCanTxEnabled(doc["on"] | false);
+        pending.type = PendingCmdType::TxMaster;
+        pending.on = doc["on"] | false;
+        enqueuePendingCommand(pending);
         return;
     }
     if (strcmp(cmd, "tx_enable") == 0)
     {
-        const char *ch = doc["ch"] | "A";
-        setAnalyzerChannelTxEnabled((ch[0] == 'B' || ch[0] == 'b') ? 1 : 0, doc["on"] | false);
+        const char *ch = doc["ch"] | nullptr;
+        if (!analyzerWebParseChannelToken(ch, pending.channel))
+            return;
+        pending.type = PendingCmdType::TxEnable;
+        pending.on = doc["on"] | false;
+        enqueuePendingCommand(pending);
         return;
     }
     if (strcmp(cmd, "snapshot") == 0)
     {
-        const char *slot = doc["slot"] | "A";
-        if (g_snapshots && g_table)
-            g_snapshots->capture((slot[0] == 'B' || slot[0] == 'b') ? SnapshotSlot::B : SnapshotSlot::A, *g_table);
+        const char *slot = doc["slot"] | nullptr;
+        if (!analyzerWebParseSlotToken(slot, pending.slot))
+            return;
+        pending.type = PendingCmdType::Snapshot;
+        enqueuePendingCommand(pending);
         return;
     }
     if (strcmp(cmd, "diff") == 0)
     {
-        sendSnapshotDiff();
+        pending.type = PendingCmdType::Diff;
+        enqueuePendingCommand(pending);
         return;
     }
     if (strcmp(cmd, "baseline") == 0)
     {
-        sendBaseline();
+        pending.type = PendingCmdType::Baseline;
+        enqueuePendingCommand(pending);
         return;
     }
     if (strcmp(cmd, "mark") == 0)
     {
-        sendPretrigger();
+        pending.type = PendingCmdType::Mark;
+        enqueuePendingCommand(pending);
         return;
     }
     if (strcmp(cmd, "label_set") == 0)
     {
-        const char *ch = doc["ch"] | "A";
-        const uint8_t channel = (ch[0] == 'B' || ch[0] == 'b') ? 1 : 0;
+        const char *ch = doc["ch"] | nullptr;
         const int id = doc["id"] | -1;
-        const char *text = doc["text"] | "";
-        if (id >= 0 && id < kStdIdCount && g_labels && g_labels->upsert(channel, static_cast<uint16_t>(id), text))
-            sendLabelUpdateNotice();
+        if (!analyzerWebParseChannelToken(ch, pending.channel) || id < 0 || id >= kStdIdCount)
+            return;
+        pending.type = PendingCmdType::LabelSet;
+        pending.id = static_cast<uint16_t>(id);
+        strlcpy(pending.text, doc["text"] | "", sizeof(pending.text));
+        enqueuePendingCommand(pending);
         return;
     }
     if (strcmp(cmd, "label_delete") == 0)
     {
-        const char *ch = doc["ch"] | "A";
-        const uint8_t channel = (ch[0] == 'B' || ch[0] == 'b') ? 1 : 0;
+        const char *ch = doc["ch"] | nullptr;
         const int id = doc["id"] | -1;
-        if (id >= 0 && id < kStdIdCount && g_labels && g_labels->remove(channel, static_cast<uint16_t>(id)))
-            sendLabelUpdateNotice();
+        if (!analyzerWebParseChannelToken(ch, pending.channel) || id < 0 || id >= kStdIdCount)
+            return;
+        pending.type = PendingCmdType::LabelDelete;
+        pending.id = static_cast<uint16_t>(id);
+        enqueuePendingCommand(pending);
         return;
     }
 }
 
-void onWsEvent(AsyncWebSocket *, AsyncWebSocketClient *, AwsEventType type, void *, uint8_t *data, size_t len)
+void onWsEvent(AsyncWebSocket *, AsyncWebSocketClient *, AwsEventType type, void *arg, uint8_t *data, size_t len)
 {
-    if (type == WS_EVT_DATA)
-        handleCommand(reinterpret_cast<const char *>(data), len);
+    if (type != WS_EVT_DATA)
+        return;
+
+    const AwsFrameInfo *info = static_cast<const AwsFrameInfo *>(arg);
+    if (!info || !info->final || info->index != 0 || info->len != len || info->opcode != WS_TEXT || len > kMaxWsCommandBytes)
+        return;
+
+    handleCommand(reinterpret_cast<const char *>(data), len);
 }
 
 void drainQueueIntoTable()
@@ -389,6 +513,7 @@ void analyzerWebBegin()
 void analyzerWebLoop()
 {
     drainQueueIntoTable();
+    processPendingCommands();
     ws.cleanupClients();
 
     const uint32_t now = millis();

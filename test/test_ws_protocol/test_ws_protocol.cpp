@@ -1,5 +1,6 @@
 #include <unity.h>
 #include <cstring>
+#include "analyzer/analyzer_web.h"
 #include "analyzer/ws_protocol.h"
 
 void setUp() {}
@@ -215,6 +216,35 @@ void test_baseline_respects_buffer_cap()
     TEST_ASSERT_EQUAL_UINT16(0x111, out[0].id);
 }
 
+void test_analyzer_web_parses_only_explicit_valid_channels_and_slots()
+{
+    uint8_t channel = 99;
+    TEST_ASSERT_TRUE(analyzerWebParseChannelForTest("A", channel));
+    TEST_ASSERT_EQUAL_UINT8(0, channel);
+    TEST_ASSERT_TRUE(analyzerWebParseChannelForTest("a", channel));
+    TEST_ASSERT_EQUAL_UINT8(0, channel);
+    TEST_ASSERT_TRUE(analyzerWebParseChannelForTest("B", channel));
+    TEST_ASSERT_EQUAL_UINT8(1, channel);
+    TEST_ASSERT_TRUE(analyzerWebParseChannelForTest("b", channel));
+    TEST_ASSERT_EQUAL_UINT8(1, channel);
+    channel = 77;
+    TEST_ASSERT_FALSE(analyzerWebParseChannelForTest(nullptr, channel));
+    TEST_ASSERT_EQUAL_UINT8(77, channel);
+    TEST_ASSERT_FALSE(analyzerWebParseChannelForTest("", channel));
+    TEST_ASSERT_FALSE(analyzerWebParseChannelForTest("C", channel));
+    TEST_ASSERT_FALSE(analyzerWebParseChannelForTest("AA", channel));
+
+    SnapshotSlot slot = SnapshotSlot::B;
+    TEST_ASSERT_TRUE(analyzerWebParseSlotForTest("A", slot));
+    TEST_ASSERT_TRUE(slot == SnapshotSlot::A);
+    TEST_ASSERT_TRUE(analyzerWebParseSlotForTest("b", slot));
+    TEST_ASSERT_TRUE(slot == SnapshotSlot::B);
+    TEST_ASSERT_FALSE(analyzerWebParseSlotForTest(nullptr, slot));
+    TEST_ASSERT_TRUE(slot == SnapshotSlot::B);
+    TEST_ASSERT_FALSE(analyzerWebParseSlotForTest("C", slot));
+    TEST_ASSERT_FALSE(analyzerWebParseSlotForTest("BB", slot));
+}
+
 int main(int, char **)
 {
     UNITY_BEGIN();
@@ -228,5 +258,6 @@ int main(int, char **)
     RUN_TEST(test_pretrigger_layout_and_cap);
     RUN_TEST(test_baseline_layout);
     RUN_TEST(test_baseline_respects_buffer_cap);
+    RUN_TEST(test_analyzer_web_parses_only_explicit_valid_channels_and_slots);
     return UNITY_END();
 }
