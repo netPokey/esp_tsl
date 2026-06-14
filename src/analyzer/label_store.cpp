@@ -5,37 +5,61 @@
 #include <Preferences.h>
 #endif
 
-namespace
-{
-struct PersistedLabels
-{
-    size_t count = 0;
-    LabelEntry entries[kMaxLabels] = {};
-};
-}
-
 void LabelStore::begin()
 {
-    count_ = 0;
-    memset(entries_, 0, sizeof(entries_));
-
 #if defined(ARDUINO)
     Preferences prefs;
     if (!prefs.begin("analyzer", true))
         return;
 
-    PersistedLabels persisted{};
     const size_t len = prefs.getBytesLength("labels");
-    if (len == sizeof(persisted) && prefs.getBytes("labels", &persisted, sizeof(persisted)) == sizeof(persisted))
+    if (len > 0 && len % sizeof(LabelEntry) == 0)
     {
-        if (persisted.count <= kMaxLabels)
+        const size_t count = len / sizeof(LabelEntry);
+        if (count <= kMaxLabels)
         {
-            count_ = persisted.count;
-            memcpy(entries_, persisted.entries, sizeof(entries_));
+            LabelEntry persisted[kMaxLabels] = {};
+            if (prefs.getBytes("labels", persisted, len) == len)
+                loadEntries(persisted, count);
         }
     }
     prefs.end();
+#else
+    count_ = 0;
+    memset(entries_, 0, sizeof(entries_));
 #endif
+}
+
+bool LabelStore::loadFromBlobForTest(const LabelEntry *entries, size_t count)
+{
+    return loadEntries(entries, count);
+}
+
+bool LabelStore::loadEntries(const LabelEntry *entries, size_t count)
+{
+    if (count > kMaxLabels || (count > 0 && !entries))
+        return false;
+
+    LabelEntry sanitized[kMaxLabels] = {};
+    size_t sanitizedCount = 0;
+
+    for (size_t i = 0; i < count; ++i)
+    {
+        if (entries[i].channel > 1)
+            continue;
+
+        LabelEntry entry = entries[i];
+        entry.text[kLabelTextLen - 1] = '\0';
+        if (entry.text[0] == '\0')
+            continue;
+
+        sanitized[sanitizedCount++] = entry;
+    }
+
+    memset(entries_, 0, sizeof(entries_));
+    memcpy(entries_, sanitized, sizeof(sanitized));
+    count_ = sanitizedCount;
+    return true;
 }
 
 bool LabelStore::upsert(uint8_t channel, uint16_t id, const char *text)

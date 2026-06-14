@@ -16,6 +16,7 @@ class LabelStore
 {
 public:
     void begin();
+    bool loadFromBlobForTest(const LabelEntry *entries, size_t count);
     bool upsert(uint8_t channel, uint16_t id, const char *text);
     bool remove(uint8_t channel, uint16_t id);
     const LabelEntry *entries() const;
@@ -24,6 +25,7 @@ public:
 private:
     int find(uint8_t channel, uint16_t id) const;
     void persist();
+    bool loadEntries(const LabelEntry *entries, size_t count);
 
     LabelEntry entries_[kMaxLabels] = {};
     size_t count_ = 0;
