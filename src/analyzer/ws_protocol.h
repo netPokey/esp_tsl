@@ -38,6 +38,18 @@ struct WsBusStats
     uint8_t bus_off_b;
     uint32_t dropped;
 };
+
+struct WsPretriggerRecord
+{
+    uint8_t channel;
+    uint16_t id;
+    uint16_t first_seen_ms_ago;
+    uint16_t last_seen_ms_ago;
+    uint16_t frames;
+    uint16_t changes;
+    uint8_t dlc;
+    uint8_t data[8];
+};
 #pragma pack(pop)
 
 size_t wsBuildFrameDelta(uint8_t *buf, size_t cap, const WsFrameRecord *recs, uint8_t count);
