@@ -78,6 +78,39 @@ void test_small_buffer_resumes_across_calls()
     TEST_ASSERT_EQUAL_STRING(big, acc.c_str());
 }
 
+void test_header_exactly_fills_chunk()
+{
+    CapturedFrame storage[4];
+    Recorder r;
+    r.init(storage, 4);
+    r.start();
+    r.push(mk(0x100, 1000000ULL));
+    RecordCsvCursor cur;
+    char tight[27];
+    size_t first = recordCsvFill(tight, sizeof(tight), r, r.count(), cur);
+    TEST_ASSERT_EQUAL_UINT(strlen("time_s,channel,id,dlc,data\n"), first);
+    TEST_ASSERT_TRUE(cur.header_sent);
+    TEST_ASSERT_EQUAL_UINT(0, cur.frame_index);
+}
+
+void test_line_exactly_fills_chunk()
+{
+    CapturedFrame storage[4];
+    Recorder r;
+    r.init(storage, 4);
+    r.start();
+    r.push(mk(0x100, 1000000ULL));
+    const size_t total = r.count();
+    RecordCsvCursor cur;
+    char header[27];
+    TEST_ASSERT_EQUAL_UINT(sizeof(header), recordCsvFill(header, sizeof(header), r, total, cur));
+    char line[24];
+    size_t second = recordCsvFill(line, sizeof(line), r, total, cur);
+    TEST_ASSERT_EQUAL_UINT(strlen("0.000000,A,0x100,1,AB\n"), second);
+    TEST_ASSERT_EQUAL_UINT(1, cur.frame_index);
+    TEST_ASSERT_EQUAL_UINT(0, recordCsvFill(line, sizeof(line), r, total, cur));
+}
+
 void test_header_fits_but_first_line_resumes_next_call()
 {
     CapturedFrame storage[4];
@@ -87,14 +120,12 @@ void test_header_fits_but_first_line_resumes_next_call()
     r.push(mk(0x100, 1000000ULL));
     const size_t total = r.count();
     RecordCsvCursor cur;
-    // 表头 "time_s,channel,id,dlc,data\n" = 27 字节，能写下；首行写不下。
     char tight[28];
     size_t first = recordCsvFill(tight, sizeof(tight), r, total, cur);
     tight[first] = '\0';
     TEST_ASSERT_EQUAL_STRING("time_s,channel,id,dlc,data\n", tight);
     TEST_ASSERT_TRUE(cur.header_sent);
-    TEST_ASSERT_EQUAL_UINT(0, cur.frame_index);   // 首帧尚未输出
-    // 下次给足 buffer，从首帧续传
+    TEST_ASSERT_EQUAL_UINT(0, cur.frame_index);
     char buf[256];
     size_t second = recordCsvFill(buf, sizeof(buf), r, total, cur);
     buf[second] = '\0';
@@ -125,6 +156,8 @@ int main(int, char **)
     RUN_TEST(test_empty_recorder_emits_header_only);
     RUN_TEST(test_single_call_header_plus_all_lines);
     RUN_TEST(test_small_buffer_resumes_across_calls);
+    RUN_TEST(test_header_exactly_fills_chunk);
+    RUN_TEST(test_line_exactly_fills_chunk);
     RUN_TEST(test_header_fits_but_first_line_resumes_next_call);
     RUN_TEST(test_base_ts_taken_from_oldest_frame);
     return UNITY_END();

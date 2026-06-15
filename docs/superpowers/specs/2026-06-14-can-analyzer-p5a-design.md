@@ -121,7 +121,7 @@ private:
 - 回调内部维护「已发帧游标」：首次发表头；之后每次调用 `recorder->collect(tmp, n, cursor)` 取下一批帧，逐帧 `recordCsvLine` 写入 `buf`（受 `maxLen` 约束，不溢出），返回写入字节数；遍历完返回 0 结束。
 - `base_ts_us` 在首批确定并缓存于回调状态。
 - 响应头 `Content-Disposition: attachment; filename="can-record.csv"`。
-- 下载期间录制应已 `stop`（前端约束）；若仍 active，按调用瞬间快照的 `count()` 为界，避免并发写读越界。
+- 下载期间录制必须已 `stop`；若仍 active，后端返回 409，避免 AsyncTCP 下载任务与 Core1 drain 并发读写录制缓冲。
 
 ### 4.3 状态
 

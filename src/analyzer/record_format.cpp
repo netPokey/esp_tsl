@@ -13,9 +13,11 @@ size_t recordCsvHeader(char *out, size_t cap)
 {
     const char *h = "time_s,channel,id,dlc,data\n";
     size_t len = strlen(h);
-    if (cap < len + 1)
+    if (cap < len)
         return 0;
-    memcpy(out, h, len + 1);
+    memcpy(out, h, len);
+    if (cap > len)
+        out[len] = '\0';
     return len;
 }
 
@@ -42,9 +44,11 @@ size_t recordCsvLine(char *out, size_t cap, const CapturedFrame &frame, uint64_t
         return 0;
     tmp[pos++] = '\n';
     tmp[pos] = '\0';
-    if (cap < pos + 1)
+    if (cap < pos)
         return 0;
-    memcpy(out, tmp, pos + 1);
+    memcpy(out, tmp, pos);
+    if (cap > pos)
+        out[pos] = '\0';
     return pos;
 }
 
