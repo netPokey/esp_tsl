@@ -4,7 +4,7 @@
 #include "analyzer_types.h"
 
 // 写 CSV 表头 "time_s,channel,id,dlc,data\n" 到 out（含结尾 NUL 不计入返回值）。
-// 返回写入的字符数（不含 NUL）。若 cap 不足则写入尽可能多并返回 0。
+// 返回写入的字符数（不含 NUL）。若 cap 不足则不写入并返回 0。
 size_t recordCsvHeader(char *out, size_t cap);
 
 // 写单帧 CSV 行（含结尾 '\n'）。
