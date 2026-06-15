@@ -2,6 +2,7 @@
 #include <cstddef>
 #include <cstdint>
 #include "analyzer_types.h"
+#include "recorder.h"
 
 // 写 CSV 表头 "time_s,channel,id,dlc,data\n" 到 out（含结尾 NUL 不计入返回值）。
 // 返回写入的字符数（不含 NUL）。若 cap 不足则不写入并返回 0。
@@ -13,8 +14,6 @@ size_t recordCsvHeader(char *out, size_t cap);
 // dlc: 十进制；data: dlc 个字节连续大写 hex（无分隔，dlc>8 截断到 8）。
 // 返回写入字符数（不含 NUL）；若 cap 不足容纳整行则不写入并返回 0。
 size_t recordCsvLine(char *out, size_t cap, const CapturedFrame &frame, uint64_t base_ts_us);
-
-#include "recorder.h"
 
 // 下载流式游标：跨多次回调保持进度。
 struct RecordCsvCursor

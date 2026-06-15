@@ -64,7 +64,8 @@ size_t recordCsvFill(char *buf, size_t maxLen, const Recorder &rec, size_t total
         CapturedFrame f;
         if (rec.collect(&f, 1, cursor.frame_index) == 0)
             break;
-        if (!cursor.base_set)
+        // base 取最旧帧(序号 0)的时间戳；前提是 cursor 从 frame_index==0 起。
+        if (cursor.frame_index == 0 && !cursor.base_set)
         {
             cursor.base_ts_us = f.ts_us;
             cursor.base_set = true;
