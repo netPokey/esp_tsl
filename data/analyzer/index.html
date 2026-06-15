@@ -53,6 +53,44 @@
       <table id="pretrigger"><thead><tr><th>通道</th><th>ID</th><th>首见前</th><th>末见前</th><th>帧数</th><th>变更</th><th>Data</th></tr></thead><tbody></tbody></table>
     </section>
   </div>
+  <section class="signal-workbench">
+    <div class="workbench-head">
+      <h2>Signal Workbench</h2>
+      <div id="signal-target" class="panel-summary">未选中 target：点击实时表行或 P3 结果 ID 单元选择 (channel,id)</div>
+    </div>
+    <div class="controls workbench-controls">
+      <button id="signal-hints-btn" disabled>请求 hints</button>
+      <button id="signal-export-btn">导出 JSON</button>
+      <button id="signal-import-btn">导入 JSON</button>
+      <button id="signal-load-common-btn">加载设备常用项</button>
+      <button id="signal-save-common-btn">保存到设备常用项</button>
+      <input id="signal-import-file" type="file" accept="application/json,.json" class="hidden"/>
+      <span id="signal-status">browser workset=0</span>
+    </div>
+    <div class="workbench-grid">
+      <section>
+        <h3>手动信号编辑</h3>
+        <div class="signal-form">
+          <label>label <input id="sig-label" type="text" placeholder="Signal label"/></label>
+          <label>start_bit <input id="sig-start-bit" type="number" min="0" max="63" value="0"/></label>
+          <label>bit_length <input id="sig-bit-length" type="number" min="1" max="64" value="8"/></label>
+          <label>endian <select id="sig-endian"><option value="intel">intel</option><option value="motorola">motorola</option></select></label>
+          <label><input id="sig-signed" type="checkbox"/> signed</label>
+          <label>scale <input id="sig-scale" type="number" step="any" value="1"/></label>
+          <label>offset <input id="sig-offset" type="number" step="any" value="0"/></label>
+          <label>display <select id="sig-display"><option value="line">line</option><option value="step">step</option><option value="raw">raw</option></select></label>
+          <button id="sig-save-btn" disabled>保存到浏览器工作集</button>
+        </div>
+        <div id="signal-specs" class="signal-list empty">当前 target 无浏览器工作集 spec</div>
+      </section>
+      <section>
+        <h3>即时解码</h3>
+        <div id="signal-decode" class="signal-list empty">等待 target、samples 和 spec…</div>
+        <h3>候选 hints</h3>
+        <div id="signal-hints" class="signal-list empty">暂无 hints</div>
+      </section>
+    </div>
+  </section>
   <script src="app.js"></script>
 </body>
 </html>

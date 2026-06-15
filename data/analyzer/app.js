@@ -26,6 +26,26 @@ const snapshotSummary = document.getElementById('snapshot-summary');
 const pretriggerSummary = document.getElementById('pretrigger-summary');
 const snapshotBody = document.querySelector('#snapshot-diff tbody');
 const pretriggerBody = document.querySelector('#pretrigger tbody');
+const signalTargetEl = document.getElementById('signal-target');
+const signalStatusEl = document.getElementById('signal-status');
+const signalHintsBtn = document.getElementById('signal-hints-btn');
+const signalExportBtn = document.getElementById('signal-export-btn');
+const signalImportBtn = document.getElementById('signal-import-btn');
+const signalImportFile = document.getElementById('signal-import-file');
+const signalLoadCommonBtn = document.getElementById('signal-load-common-btn');
+const signalSaveCommonBtn = document.getElementById('signal-save-common-btn');
+const sigLabel = document.getElementById('sig-label');
+const sigStartBit = document.getElementById('sig-start-bit');
+const sigBitLength = document.getElementById('sig-bit-length');
+const sigEndian = document.getElementById('sig-endian');
+const sigSigned = document.getElementById('sig-signed');
+const sigScale = document.getElementById('sig-scale');
+const sigOffset = document.getElementById('sig-offset');
+const sigDisplay = document.getElementById('sig-display');
+const sigSaveBtn = document.getElementById('sig-save-btn');
+const signalSpecsEl = document.getElementById('signal-specs');
+const signalDecodeEl = document.getElementById('signal-decode');
+const signalHintsEl = document.getElementById('signal-hints');
 const tbody = { 0: document.querySelector('#tbl-a tbody'), 1: document.querySelector('#tbl-b tbody') };
 const rows = {};
 const records = {};
@@ -34,6 +54,10 @@ const hidden = new Set();
 const whitelist = new Set();
 let snapshotDiffRows = [];
 let pretriggerRows = [];
+let signalTarget = null;
+let signalSamples = [];
+let signalHints = [];
+let signalSpecs = [];
 let ws = null;
 let txState = { master: false, a: false, b: false, onlineA: false, onlineB: false };
 
@@ -53,6 +77,14 @@ function parseId(text) {
   const n = /^0x/i.test(s) ? Number.parseInt(s, 16) : Number.parseInt(s, 16);
   return Number.isFinite(n) && n >= 0 && n <= 0x7ff ? n : null;
 }
+
+function targetKey(ch, id) { return `${channelName(ch)}:${id}`; }
+function targetMatches(target, ch, id) { return !!target && target.ch === ch && target.id === id; }
+function endianToWire(endian) { return endian === 'motorola' || endian === 1 || endian === '1' ? 1 : 0; }
+function endianToText(endian) { return endian === 1 || endian === '1' || endian === 'motorola' ? 'motorola' : 'intel'; }
+function signedToBool(value) { return value === true || value === 1 || value === '1'; }
+function displayToText(value) { return value === 'raw' || value === 'step' ? value : 'line'; }
+function statusSignal(text) { signalStatusEl.textContent = `${text} · browser workset=${signalSpecs.length}`; }
 
 function formatByte(b) {
   switch (baseSelect.value) {
@@ -146,6 +178,9 @@ function rowHidden(rec) {
 
 function appendIdCell(cell, rec) {
   clearNode(cell);
+  cell.className = 'selectable-id';
+  cell.title = '选择 Signal Workbench target';
+  cell.onclick = (ev) => { ev.stopPropagation(); selectSignalTarget(rec.ch, rec.id); };
   const idSpan = document.createElement('span');
   idSpan.className = 'id-text';
   idSpan.textContent = idText(rec.id);
@@ -253,9 +288,397 @@ function hideRecord(rec) {
 function sendCmd(obj) {
   if (!ws || ws.readyState !== WebSocket.OPEN) {
     p3Status.textContent = 'WS 未连接，命令未发送';
-    return;
+    if (String(obj.cmd || '').startsWith('p4_')) statusSignal('WS 未连接，P4 命令未发送');
+    return false;
   }
   ws.send(JSON.stringify(obj));
+  return true;
+}
+
+function sendSignalWatch(target, on) {
+  if (!target) return;
+  sendCmd({ cmd: 'p4_watch', ch: channelName(target.ch), id: target.id, on: !!on });
+}
+
+function selectSignalTarget(ch, id) {
+  if (targetMatches(signalTarget, ch, id)) return;
+  const previous = signalTarget;
+  signalTarget = { ch, id };
+  signalSamples = [];
+  signalHints = [];
+  if (previous) sendSignalWatch(previous, false);
+  sendSignalWatch(signalTarget, true);
+  statusSignal(`watch ${channelName(ch)} ${idText(id)}`);
+  renderSignalWorkbench();
+}
+
+function specsForTarget() {
+  if (!signalTarget) return [];
+  return signalSpecs.filter(spec => targetMatches(spec, signalTarget.ch, signalTarget.id));
+}
+
+function normalizeSignalSpec(src, fallbackTarget) {
+  const chToken = src.ch !== undefined ? src.ch : src.channel;
+  const ch = chToken === 'B' || chToken === 1 || chToken === '1' ? 1 : (chToken === 'A' || chToken === 0 || chToken === '0' ? 0 : (fallbackTarget ? fallbackTarget.ch : null));
+  const id = Number(src.id !== undefined ? src.id : (fallbackTarget ? fallbackTarget.id : NaN));
+  const startBit = Number(src.start_bit);
+  const bitLength = Number(src.bit_length);
+  const scale = Number(src.scale === undefined ? 1 : src.scale);
+  const offset = Number(src.offset === undefined ? 0 : src.offset);
+  const label = String(src.label || '').trim();
+  const display = displayToText(src.display);
+  if (ch !== 0 && ch !== 1) return null;
+  if (!Number.isInteger(id) || id < 0 || id > 0x7ff) return null;
+  if (!Number.isInteger(startBit) || startBit < 0 || startBit > 63) return null;
+  if (!Number.isInteger(bitLength) || bitLength < 1 || bitLength > 64 || startBit + bitLength > 64) return null;
+  if (!Number.isFinite(scale) || !Number.isFinite(offset)) return null;
+  if (!label) return null;
+  return {
+    label,
+    ch,
+    id,
+    start_bit: startBit,
+    bit_length: bitLength,
+    endian: endianToText(src.endian),
+    signed: signedToBool(src.signed),
+    scale,
+    offset,
+    display,
+  };
+}
+
+function currentFormSpec() {
+  if (!signalTarget) return null;
+  return normalizeSignalSpec({
+    label: sigLabel.value,
+    ch: signalTarget.ch,
+    id: signalTarget.id,
+    start_bit: Number(sigStartBit.value),
+    bit_length: Number(sigBitLength.value),
+    endian: sigEndian.value,
+    signed: sigSigned.checked,
+    scale: Number(sigScale.value),
+    offset: Number(sigOffset.value),
+    display: sigDisplay.value,
+  }, signalTarget);
+}
+
+function fillSignalForm(spec) {
+  sigLabel.value = spec.label || '';
+  sigStartBit.value = spec.start_bit;
+  sigBitLength.value = spec.bit_length;
+  sigEndian.value = endianToText(spec.endian);
+  sigSigned.checked = signedToBool(spec.signed);
+  sigScale.value = spec.scale;
+  sigOffset.value = spec.offset;
+  sigDisplay.value = displayToText(spec.display);
+}
+
+function saveFormSpec() {
+  const spec = currentFormSpec();
+  if (!spec) {
+    statusSignal('spec 无效：需要 target、label、有效 bit 范围和数值 scale/offset');
+    return;
+  }
+  const idx = signalSpecs.findIndex(item => item.ch === spec.ch && item.id === spec.id && item.label === spec.label);
+  if (idx >= 0) signalSpecs[idx] = spec;
+  else signalSpecs.push(spec);
+  statusSignal(idx >= 0 ? `已更新 ${spec.label}` : `已新增 ${spec.label}`);
+  renderSignalWorkbench();
+}
+
+function signalExtractUnsigned(data, startBit, bitLength, endian) {
+  if (bitLength < 1 || bitLength > 64 || startBit < 0 || startBit + bitLength > 64) return 0n;
+  let raw = 0n;
+  if (endianToText(endian) === 'intel') {
+    for (let i = 0; i < bitLength; i++) {
+      const bitIndex = startBit + i;
+      const byteIndex = Math.floor(bitIndex / 8);
+      const bitInByte = bitIndex % 8;
+      const bit = (BigInt(data[byteIndex] || 0) >> BigInt(bitInByte)) & 1n;
+      raw |= bit << BigInt(i);
+    }
+    return raw;
+  }
+  for (let i = 0; i < bitLength; i++) {
+    const bitIndex = startBit + i;
+    const byteIndex = Math.floor(bitIndex / 8);
+    const bitInByte = 7 - (bitIndex % 8);
+    const bit = (BigInt(data[byteIndex] || 0) >> BigInt(bitInByte)) & 1n;
+    raw = (raw << 1n) | bit;
+  }
+  return raw;
+}
+
+function signalSignExtend(raw, bitLength) {
+  if (!bitLength) return 0n;
+  if (bitLength === 64) return BigInt.asIntN(64, raw);
+  const signBit = 1n << BigInt(bitLength - 1);
+  return (raw & signBit) ? (raw | (~0n << BigInt(bitLength))) : raw;
+}
+
+function decodeSignalSample(sample, spec) {
+  const rawUnsigned = signalExtractUnsigned(sample.data, spec.start_bit, spec.bit_length, spec.endian);
+  const rawSigned = spec.signed ? signalSignExtend(rawUnsigned, spec.bit_length) : rawUnsigned;
+  const raw = Number(rawSigned);
+  return {
+    rawText: rawSigned.toString(),
+    value: raw * spec.scale + spec.offset,
+  };
+}
+
+function formatValue(value) {
+  if (!Number.isFinite(value)) return 'n/a';
+  if (Math.abs(value) >= 1000 || Math.abs(value) < 0.01) return value.toExponential(3);
+  return value.toFixed(3).replace(/\.0+$/, '').replace(/(\.\d*?)0+$/, '$1');
+}
+
+function sparklineSvg(values, display) {
+  const w = 260;
+  const h = 68;
+  if (values.length < 2) return `<svg class="sparkline" viewBox="0 0 ${w} ${h}"><text x="8" y="38">need >=2 samples</text></svg>`;
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const span = max === min ? 1 : max - min;
+  const xFor = i => (i * (w - 8)) / (values.length - 1) + 4;
+  const yFor = v => h - 6 - ((v - min) * (h - 12)) / span;
+  let points = '';
+  if (display === 'step') {
+    const step = [];
+    for (let i = 0; i < values.length; i++) {
+      const x = xFor(i);
+      const y = yFor(values[i]);
+      if (i > 0) step.push(`${x},${yFor(values[i - 1])}`);
+      step.push(`${x},${y}`);
+    }
+    points = step.join(' ');
+  } else {
+    points = values.map((v, i) => `${xFor(i)},${yFor(v)}`).join(' ');
+  }
+  return `<svg class="sparkline" viewBox="0 0 ${w} ${h}"><polyline points="${points}"/></svg>`;
+}
+
+function renderSignalSpecs() {
+  clearNode(signalSpecsEl);
+  const specs = specsForTarget();
+  signalSpecsEl.classList.toggle('empty', specs.length === 0);
+  if (!signalTarget) {
+    signalSpecsEl.textContent = '未选中 target';
+    return;
+  }
+  if (specs.length === 0) {
+    signalSpecsEl.textContent = '当前 target 无浏览器工作集 spec';
+    return;
+  }
+  for (const spec of specs) {
+    const item = document.createElement('div');
+    item.className = 'signal-item';
+    const meta = document.createElement('div');
+    meta.textContent = `${spec.label} · ${spec.endian}${spec.signed ? ' signed' : ''} · bit ${spec.start_bit}+${spec.bit_length} · x${spec.scale} + ${spec.offset} · ${spec.display}`;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.textContent = '编辑';
+    btn.onclick = () => fillSignalForm(spec);
+    item.appendChild(meta);
+    item.appendChild(btn);
+    signalSpecsEl.appendChild(item);
+  }
+}
+
+function renderSignalDecode() {
+  clearNode(signalDecodeEl);
+  const specs = specsForTarget();
+  signalDecodeEl.classList.toggle('empty', !signalTarget || specs.length === 0 || signalSamples.length === 0);
+  if (!signalTarget) {
+    signalDecodeEl.textContent = '未选中 target';
+    return;
+  }
+  if (signalSamples.length === 0) {
+    signalDecodeEl.textContent = '等待 signal samples（可点击“请求 hints”获取最近样本）';
+    return;
+  }
+  if (specs.length === 0) {
+    signalDecodeEl.textContent = '当前 target 无 spec，保存手动信号后即时解码';
+    return;
+  }
+  for (const spec of specs) {
+    const decoded = signalSamples.map(sample => decodeSignalSample(sample, spec));
+    const values = decoded.map(d => spec.display === 'raw' ? Number(d.rawText) : d.value).filter(Number.isFinite);
+    const current = decoded[decoded.length - 1];
+    const min = values.length ? Math.min(...values) : NaN;
+    const max = values.length ? Math.max(...values) : NaN;
+    const item = document.createElement('div');
+    item.className = 'signal-item signal-decode-item';
+    item.innerHTML = `<div><strong>${spec.label}</strong> current=${formatValue(spec.display === 'raw' ? Number(current.rawText) : current.value)} raw=${current.rawText} min=${formatValue(min)} max=${formatValue(max)} samples=${signalSamples.length}</div>${sparklineSvg(values, spec.display)}`;
+    signalDecodeEl.appendChild(item);
+  }
+}
+
+function hintKindText(kind) {
+  if (kind === 1) return 'mux';
+  if (kind === 2) return 'counter';
+  if (kind === 3) return 'checksum';
+  return `kind ${kind}`;
+}
+
+function renderSignalHints() {
+  clearNode(signalHintsEl);
+  signalHintsEl.classList.toggle('empty', signalHints.length === 0);
+  if (!signalTarget) {
+    signalHintsEl.textContent = '未选中 target';
+    return;
+  }
+  if (signalHints.length === 0) {
+    signalHintsEl.textContent = '暂无 hints';
+    return;
+  }
+  for (const hint of signalHints) {
+    const item = document.createElement('div');
+    item.className = 'signal-item';
+    const text = document.createElement('div');
+    text.textContent = `${hintKindText(hint.kind)} · bit ${hint.start_bit}+${hint.bit_length} · confidence=${hint.confidence.toFixed(3)} · evidence=${hint.evidence || '-'}`;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.textContent = '带入表单';
+    btn.onclick = () => {
+      sigStartBit.value = hint.start_bit;
+      sigBitLength.value = hint.bit_length;
+      statusSignal('hint 已带入表单，未自动保存');
+    };
+    item.appendChild(text);
+    item.appendChild(btn);
+    signalHintsEl.appendChild(item);
+  }
+}
+
+function renderSignalWorkbench() {
+  if (signalTarget) signalTargetEl.textContent = `当前 target: ${channelName(signalTarget.ch)} ${idText(signalTarget.id)}`;
+  else signalTargetEl.textContent = '未选中 target：点击实时表行或 P3 结果 ID 单元选择 (channel,id)';
+  signalHintsBtn.disabled = !signalTarget;
+  sigSaveBtn.disabled = !signalTarget;
+  renderSignalSpecs();
+  renderSignalDecode();
+  renderSignalHints();
+}
+
+function parseSignalSamples(buf, dv, count) {
+  if (count === 0) signalSamples = [];
+  let o = 3;
+  for (let i = 0; i < count; i++) {
+    if (o + 18 > buf.byteLength) break;
+    const ch = dv.getUint8(o); o += 1;
+    const id = dv.getUint16(o, true); o += 2;
+    const dlc = dv.getUint8(o); o += 1;
+    const data = Array.from(new Uint8Array(buf.slice(o, o + 8))); o += 8;
+    const sampleAgeMs = dv.getUint16(o, true); o += 2;
+    const sequence = dv.getUint32(o, true); o += 4;
+    if (targetMatches(signalTarget, ch, id)) signalSamples.push({ ch, id, dlc, data, sampleAgeMs, sequence });
+  }
+  signalSamples.sort((a, b) => a.sequence - b.sequence);
+  if (signalSamples.length > 96) signalSamples = signalSamples.slice(signalSamples.length - 96);
+  renderSignalDecode();
+}
+
+function parseSignalHints(buf, dv, count) {
+  signalHints = [];
+  let o = 3;
+  for (let i = 0; i < count; i++) {
+    if (o + 21 > buf.byteLength) break;
+    const kind = dv.getUint8(o); o += 1;
+    const startBit = dv.getUint8(o); o += 1;
+    const bitLength = dv.getUint8(o); o += 1;
+    const confidence = dv.getUint16(o, true) / 1000; o += 2;
+    const bytes = Array.from(new Uint8Array(buf.slice(o, o + 16))); o += 16;
+    const zero = bytes.indexOf(0);
+    const evidenceBytes = zero >= 0 ? bytes.slice(0, zero) : bytes;
+    const evidence = String.fromCharCode(...evidenceBytes);
+    signalHints.push({ kind, start_bit: startBit, bit_length: bitLength, confidence, evidence });
+  }
+  renderSignalHints();
+}
+
+function parseSignal(buf) {
+  if (buf.byteLength < 3) return;
+  const dv = new DataView(buf);
+  const subtype = dv.getUint8(1);
+  const count = dv.getUint8(2);
+  if (subtype === 1) parseSignalSamples(buf, dv, count);
+  else if (subtype === 2) parseSignalHints(buf, dv, count);
+}
+
+function exportSignalSpecs() {
+  const doc = { version: 1, exported_at: new Date().toISOString(), signals: signalSpecs };
+  const blob = new Blob([JSON.stringify(doc, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `signal-workset-${Date.now()}.json`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+  statusSignal('已导出浏览器工作集 JSON');
+}
+
+function importSignalDoc(doc) {
+  if (!doc || doc.version !== 1 || !Array.isArray(doc.signals)) {
+    statusSignal('导入失败：需要 {version:1, signals:[...]}');
+    return false;
+  }
+  const next = [];
+  for (const item of doc.signals) {
+    const spec = normalizeSignalSpec(item, null);
+    if (!spec) {
+      statusSignal('导入失败：signals 中存在非法 spec，整份已拒绝');
+      return false;
+    }
+    next.push(spec);
+  }
+  signalSpecs = next;
+  statusSignal(`已导入 ${signalSpecs.length} 条 spec（替换当前浏览器工作集）`);
+  renderSignalWorkbench();
+  return true;
+}
+
+async function loadCommonSignals() {
+  try {
+    const r = await fetch('/api/p4/common');
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const doc = await r.json();
+    const signals = Array.isArray(doc.signals) ? doc.signals : [];
+    const next = [];
+    for (const item of signals) {
+      const spec = normalizeSignalSpec({ ...item, display: item.display || 'line' }, null);
+      if (spec) next.push(spec);
+    }
+    signalSpecs = next;
+    statusSignal(`已加载设备常用项 ${signalSpecs.length} 条（替换当前浏览器工作集）`);
+    renderSignalWorkbench();
+  } catch (e) {
+    statusSignal(`加载设备常用项失败：${e.message || e}`);
+  }
+}
+
+async function saveCommonSignals() {
+  try {
+    const signals = signalSpecs.map(spec => ({
+      ch: channelName(spec.ch),
+      id: spec.id,
+      label: spec.label,
+      start_bit: spec.start_bit,
+      bit_length: spec.bit_length,
+      endian: endianToWire(spec.endian),
+      signed: spec.signed ? 1 : 0,
+      scale: spec.scale,
+      offset: spec.offset,
+    }));
+    const r = await fetch('/api/p4/common', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ signals }),
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    statusSignal(`已保存 ${signals.length} 条到设备常用项`);
+  } catch (e) {
+    statusSignal(`保存设备常用项失败：${e.message || e}`);
+  }
 }
 
 async function editLabel(rec) {
@@ -328,6 +751,9 @@ function appendCell(tr, value, cls) {
 
 function appendIdWithLabel(tr, ch, id) {
   const td = document.createElement('td');
+  td.className = 'selectable-id';
+  td.title = '选择 Signal Workbench target';
+  td.onclick = (ev) => { ev.stopPropagation(); selectSignalTarget(ch, id); };
   td.appendChild(textNode(idText(id)));
   const label = labels.get(channelIdKey(ch, id));
   if (label) {
@@ -458,7 +884,10 @@ function parseP3(buf) {
 function connect() {
   ws = new WebSocket('ws://' + location.host + '/ws');
   ws.binaryType = 'arraybuffer';
-  ws.onopen = () => statusEl.textContent = 'WS: 已连接';
+  ws.onopen = () => {
+    statusEl.textContent = 'WS: 已连接';
+    if (signalTarget) sendSignalWatch(signalTarget, true);
+  };
   ws.onclose = () => { statusEl.textContent = 'WS: 断开，重连中…'; setTimeout(connect, 1000); };
   ws.onmessage = (ev) => {
     if (!(ev.data instanceof ArrayBuffer) || ev.data.byteLength === 0) return;
@@ -466,6 +895,7 @@ function connect() {
     if (type === 0x01) parseDelta(ev.data);
     if (type === 0x02) parseStats(ev.data);
     if (type === 0x03) parseP3(ev.data);
+    if (type === 0x04) parseSignal(ev.data);
   };
 }
 
@@ -540,6 +970,29 @@ markBtn.onclick = () => {
   clearPretriggerResults();
   sendCmd({ cmd: 'mark' });
 };
+signalHintsBtn.onclick = () => {
+  if (!signalTarget) return;
+  signalSamples = [];
+  signalHints = [];
+  statusSignal(`请求 hints ${channelName(signalTarget.ch)} ${idText(signalTarget.id)}`);
+  renderSignalWorkbench();
+  sendCmd({ cmd: 'p4_hints', ch: channelName(signalTarget.ch), id: signalTarget.id });
+};
+sigSaveBtn.onclick = saveFormSpec;
+signalExportBtn.onclick = exportSignalSpecs;
+signalImportBtn.onclick = () => signalImportFile.click();
+signalImportFile.onchange = async () => {
+  const file = signalImportFile.files && signalImportFile.files[0];
+  signalImportFile.value = '';
+  if (!file) return;
+  try {
+    importSignalDoc(JSON.parse(await file.text()));
+  } catch (e) {
+    statusSignal(`导入失败：JSON 解析错误 ${e.message || e}`);
+  }
+};
+signalLoadCommonBtn.onclick = loadCommonSignals;
+signalSaveCommonBtn.onclick = saveCommonSignals;
 baseSelect.onchange = repaintAll;
 suppressStatic.onchange = repaintAll;
 staticSeconds.onchange = repaintAll;
@@ -549,6 +1002,7 @@ for (const el of [channelFilter, idFilter, rangeFrom, rangeTo, searchBox, whitel
   el.onchange = repaintAll;
 }
 
+renderSignalWorkbench();
 connect();
 loadLabels();
 refreshTxBanner();

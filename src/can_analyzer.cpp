@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <LittleFS.h>
 #include <esp_heap_caps.h>
+#include <cstring>
 #include <memory>
 
 #include "analyzer/analyzer_control.h"
@@ -9,9 +10,11 @@
 #include "analyzer/bus_stats.h"
 #include "analyzer/frame_queue.h"
 #include "analyzer/id_table.h"
+#include "analyzer/common_signal_store.h"
 #include "analyzer/label_store.h"
 #include "analyzer/pretrigger_buffer.h"
 #include "analyzer/rx_task.h"
+#include "analyzer/signal_window.h"
 #include "analyzer/snapshot_store.h"
 #include "can_helpers.h"
 #include "drivers/mcp2515_driver.h"
@@ -34,6 +37,13 @@ SnapshotRecord *g_snapshotA = nullptr;
 SnapshotRecord *g_snapshotB = nullptr;
 SnapshotStore g_snapshots;
 LabelStore g_labels;
+
+constexpr size_t kSignalWatchSlots = 4;
+constexpr size_t kSignalSamplesPerSlot = 64;
+WindowSlot *g_signalSlots = nullptr;
+RawSamplePoint *g_signalSamples = nullptr;
+WatchedSignalWindow g_signalWindow;
+CommonSignalStore g_commonSignals;
 
 std::unique_ptr<MCP2515Driver> g_canA;
 std::unique_ptr<TWAIDriver> g_canB;
@@ -86,6 +96,25 @@ void setup()
 
     g_labels.begin();
 
+    g_signalSlots = static_cast<WindowSlot *>(ps_malloc(sizeof(WindowSlot) * kSignalWatchSlots));
+    g_signalSamples = static_cast<RawSamplePoint *>(ps_malloc(sizeof(RawSamplePoint) * kSignalWatchSlots * kSignalSamplesPerSlot));
+    if (g_signalSlots && g_signalSamples)
+    {
+        memset(g_signalSlots, 0, sizeof(WindowSlot) * kSignalWatchSlots);
+        memset(g_signalSamples, 0, sizeof(RawSamplePoint) * kSignalWatchSlots * kSignalSamplesPerSlot);
+        for (size_t i = 0; i < kSignalWatchSlots; ++i)
+            g_signalSlots[i].samples = g_signalSamples + (i * kSignalSamplesPerSlot);
+        g_signalWindow.init(g_signalSlots, kSignalWatchSlots, kSignalSamplesPerSlot);
+    }
+    else
+    {
+        Serial.println("PSRAM allocation failed for signal watch window");
+        g_signalSlots = nullptr;
+        g_signalSamples = nullptr;
+    }
+
+    g_commonSignals.begin();
+
     g_canA.reset(new MCP2515Driver(MCP2515_CS, MCP2515_RST,
                                    MCP2515_SCLK, MCP2515_MISO, MCP2515_MOSI,
                                    &SPI, 10000000));
@@ -116,7 +145,9 @@ void setup()
     analyzerWebSetContext(&g_queue, &g_table, &g_stats,
                           g_pretriggerStorage ? &g_pretrigger : nullptr,
                           (g_snapshotA && g_snapshotB) ? &g_snapshots : nullptr,
-                          &g_labels);
+                          &g_labels,
+                          (g_signalSlots && g_signalSamples) ? &g_signalWindow : nullptr,
+                          &g_commonSignals);
     analyzerWebBegin();
 
     Serial.print("CAN analyzer ready (listen-only): http://");

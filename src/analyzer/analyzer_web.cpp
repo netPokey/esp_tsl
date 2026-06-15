@@ -1,5 +1,6 @@
 #include "analyzer/analyzer_web.h"
 #include "analyzer/analyzer_control.h"
+#include "analyzer/signal_hints.h"
 #include "analyzer/ws_protocol.h"
 #include "can_helpers.h"
 
@@ -7,6 +8,7 @@
 #include <ArduinoJson.h>
 #include <ESPAsyncWebServer.h>
 #include <LittleFS.h>
+#include <cstring>
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
 
@@ -21,6 +23,8 @@ BusStatsTracker *g_stats = nullptr;
 PretriggerBuffer *g_pretrigger = nullptr;
 SnapshotStore *g_snapshots = nullptr;
 LabelStore *g_labels = nullptr;
+WatchedSignalWindow *g_signals = nullptr;
+CommonSignalStore *g_commonSignals = nullptr;
 
 constexpr uint32_t kDirtyKeys = static_cast<uint32_t>(kChannelCount) * kStdIdCount;
 uint8_t g_dirty[kDirtyKeys / 8] = {};
@@ -35,10 +39,16 @@ constexpr size_t kFrameDeltaBatchCapacity = wsBatchCapacity((kPushBufBytes - 2) 
 constexpr size_t kSnapshotDiffBatchCapacity = wsBatchCapacity((kPushBufBytes - 3) / sizeof(WsDiffRecord));
 constexpr size_t kPretriggerBatchCapacity = wsBatchCapacity((kPushBufBytes - 3) / sizeof(WsPretriggerRecord));
 constexpr size_t kBaselineBatchCapacity = wsBatchCapacity((kPushBufBytes - 3) / sizeof(WsBaselineRecord));
+constexpr size_t kSignalSampleBatchCapacity = wsBatchCapacity((kPushBufBytes - 3) / sizeof(WsSignalSampleRecord));
+constexpr size_t kSignalHintBatchCapacity = wsBatchCapacity((kPushBufBytes - 3) / sizeof(WsSignalHintRecord));
+constexpr size_t kMaxSignalSamples = 64;
+constexpr size_t kMaxSignalHints = 8;
 static_assert(kFrameDeltaBatchCapacity >= 1, "frame delta batch capacity must be non-zero");
 static_assert(kSnapshotDiffBatchCapacity >= 1, "snapshot diff batch capacity must be non-zero");
 static_assert(kPretriggerBatchCapacity >= 1, "pretrigger batch capacity must be non-zero");
 static_assert(kBaselineBatchCapacity >= 1, "baseline batch capacity must be non-zero");
+static_assert(kSignalSampleBatchCapacity >= 1, "signal sample batch capacity must be non-zero");
+static_assert(kSignalHintBatchCapacity >= 1, "signal hint batch capacity must be non-zero");
 uint32_t g_lastPushMs = 0;
 uint32_t g_lastStatsMs = 0;
 constexpr uint32_t kPushIntervalMs = 66;
@@ -53,7 +63,9 @@ enum class PendingCmdType : uint8_t
     Baseline,
     Mark,
     LabelSet,
-    LabelDelete
+    LabelDelete,
+    P4Watch,
+    P4Hints
 };
 
 struct PendingCmd
@@ -68,12 +80,14 @@ struct PendingCmd
 
 constexpr size_t kPendingCmdCap = 8;
 constexpr size_t kMaxWsCommandBytes = 256;
+constexpr size_t kMaxCommonSignalsJsonBytes = 4096;
 PendingCmd g_pending[kPendingCmdCap];
 volatile size_t g_pendingHead = 0;
 volatile size_t g_pendingTail = 0;
 uint32_t g_pendingDropped = 0;
 portMUX_TYPE g_pendingMux = portMUX_INITIALIZER_UNLOCKED;
 portMUX_TYPE g_labelMux = portMUX_INITIALIZER_UNLOCKED;
+char g_commonSignalBody[kMaxCommonSignalsJsonBytes] = {};
 
 bool labelUpsert(uint8_t channel, uint16_t id, const char *text)
 {
@@ -113,6 +127,155 @@ size_t copyLabels(LabelEntry *out, size_t capacity)
         out[i] = entries[i];
     portEXIT_CRITICAL(&g_labelMux);
     return count;
+}
+
+size_t copyCommonSignals(CommonSignalSpec *out, size_t capacity)
+{
+    if (!g_commonSignals || !out || capacity == 0)
+        return 0;
+
+    const size_t count = g_commonSignals->count() < capacity ? g_commonSignals->count() : capacity;
+    const CommonSignalSpec *entries = g_commonSignals->entries();
+    for (size_t i = 0; i < count; ++i)
+        out[i] = entries[i];
+    return count;
+}
+
+bool replaceCommonSignals(const CommonSignalSpec *entries, size_t count)
+{
+    if (!g_commonSignals)
+        return false;
+    return g_commonSignals->replaceAll(entries, count);
+}
+
+bool parseCommonSignalSpec(JsonVariantConst src, CommonSignalSpec &out)
+{
+    const char *ch = src["ch"] | nullptr;
+    uint8_t channel = 0;
+    if (!analyzerWebParseChannelToken(ch, channel))
+        return false;
+
+    const JsonVariantConst idVar = src["id"];
+    const JsonVariantConst startBitVar = src["start_bit"];
+    const JsonVariantConst bitLengthVar = src["bit_length"];
+    const JsonVariantConst endianVar = src["endian"];
+    const JsonVariantConst signedVar = src["signed"];
+    const JsonVariantConst scaleVar = src["scale"];
+    const JsonVariantConst offsetVar = src["offset"];
+    if (!idVar.is<int>() || !startBitVar.is<int>() || !bitLengthVar.is<int>() || !endianVar.is<int>() ||
+        !signedVar.is<int>() || !scaleVar.is<float>() || !offsetVar.is<float>())
+        return false;
+
+    const int id = idVar.as<int>();
+    const int startBit = startBitVar.as<int>();
+    const int bitLength = bitLengthVar.as<int>();
+    const int endian = endianVar.as<int>();
+    const int isSigned = signedVar.as<int>();
+    if (id < 0 || id >= kStdIdCount || startBit < 0 || startBit > 63 || bitLength < 0 || bitLength > 64 ||
+        endian < 0 || endian > 255 || isSigned < 0 || isSigned > 255)
+        return false;
+
+    const char *label = src["label"] | nullptr;
+    if (!label || label[0] == '\0')
+        return false;
+
+    memset(&out, 0, sizeof(out));
+    out.channel = channel;
+    out.id = static_cast<uint16_t>(id);
+    out.start_bit = static_cast<uint8_t>(startBit);
+    out.bit_length = static_cast<uint8_t>(bitLength);
+    out.endian = static_cast<uint8_t>(endian);
+    out.is_signed = static_cast<uint8_t>(isSigned);
+    out.scale = scaleVar.as<float>();
+    out.offset = offsetVar.as<float>();
+    strlcpy(out.label, label, sizeof(out.label));
+    return true;
+}
+
+void jsonAddCommonSignal(JsonArray array, const CommonSignalSpec &spec)
+{
+    JsonObject signal = array.createNestedObject();
+    signal["ch"] = spec.channel == 1 ? "B" : "A";
+    signal["id"] = spec.id;
+    signal["label"] = spec.label;
+    signal["start_bit"] = spec.start_bit;
+    signal["bit_length"] = spec.bit_length;
+    signal["endian"] = spec.endian;
+    signal["signed"] = spec.is_signed;
+    signal["scale"] = spec.scale;
+    signal["offset"] = spec.offset;
+}
+
+void fillSignalSampleRecord(WsSignalSampleRecord &out, uint8_t channel, uint16_t id,
+                            const RawSamplePoint &sample, uint64_t nowUs)
+{
+    out.channel = channel;
+    out.id = id;
+    out.dlc = sample.dlc;
+    for (uint8_t i = 0; i < 8; ++i)
+        out.data[i] = sample.data[i];
+    out.sample_age_ms = analyzerWebSampleAgeMs(nowUs, sample.ts_us);
+    out.sequence_lo = sample.sequence;
+}
+
+void fillSignalHintRecord(WsSignalHintRecord &out, const SignalHint &hint)
+{
+    out.kind = static_cast<uint8_t>(hint.kind);
+    out.start_bit = hint.bit_range.start_bit;
+    out.bit_length = hint.bit_range.bit_length;
+    out.confidence_x1000 = analyzerWebConfidenceX1000(hint.confidence);
+    memset(out.evidence, 0, sizeof(out.evidence));
+    strncpy(out.evidence, hint.evidence, sizeof(out.evidence) - 1);
+}
+
+void sendSignalSamples(uint8_t channel, uint16_t id)
+{
+    if (!g_signals || ws.count() == 0)
+        return;
+
+    RawSamplePoint samples[kMaxSignalSamples] = {};
+    const size_t count = g_signals->copySamples(channel, id, samples, kMaxSignalSamples);
+    static WsSignalSampleRecord wire[kSignalSampleBatchCapacity];
+    static uint8_t buf[kPushBufBytes];
+    const uint64_t nowUs = static_cast<uint64_t>(esp_timer_get_time());
+    size_t offset = 0;
+
+    while (offset < count)
+    {
+        const size_t batchCount = (count - offset) < kSignalSampleBatchCapacity ? (count - offset) : kSignalSampleBatchCapacity;
+        for (size_t i = 0; i < batchCount; ++i)
+            fillSignalSampleRecord(wire[i], channel, id, samples[offset + i], nowUs);
+        const size_t bytes = wsBuildSignalSamples(buf, sizeof(buf), wire, static_cast<uint8_t>(batchCount));
+        if (bytes > 0)
+            ws.binaryAll(buf, bytes);
+        offset += batchCount;
+    }
+
+    if (count == 0)
+    {
+        const size_t bytes = wsBuildSignalSamples(buf, sizeof(buf), nullptr, 0);
+        if (bytes > 0)
+            ws.binaryAll(buf, bytes);
+    }
+}
+
+void sendSignalHints(uint8_t channel, uint16_t id)
+{
+    if (!g_signals || ws.count() == 0)
+        return;
+
+    RawSamplePoint samples[kMaxSignalSamples] = {};
+    SignalHint hints[kMaxSignalHints] = {};
+    WsSignalHintRecord wire[kSignalHintBatchCapacity] = {};
+    static uint8_t buf[kPushBufBytes];
+    const size_t sampleCount = g_signals->copySamples(channel, id, samples, kMaxSignalSamples);
+    const size_t hintCount = signalFindHints(samples, sampleCount, hints, kMaxSignalHints);
+    const size_t batchCount = hintCount < kSignalHintBatchCapacity ? hintCount : kSignalHintBatchCapacity;
+    for (size_t i = 0; i < batchCount; ++i)
+        fillSignalHintRecord(wire[i], hints[i]);
+    const size_t bytes = wsBuildSignalHints(buf, sizeof(buf), wire, static_cast<uint8_t>(batchCount));
+    if (bytes > 0)
+        ws.binaryAll(buf, bytes);
 }
 
 void sendLabelUpdateNotice()
@@ -300,6 +463,18 @@ void processPendingCommand(const PendingCmd &cmd)
         if (labelRemove(cmd.channel, cmd.id))
             sendLabelUpdateNotice();
         break;
+    case PendingCmdType::P4Watch:
+        if (!g_signals)
+            break;
+        if (cmd.on)
+            g_signals->watch(cmd.channel, cmd.id);
+        else
+            g_signals->unwatch(cmd.channel, cmd.id);
+        break;
+    case PendingCmdType::P4Hints:
+        sendSignalSamples(cmd.channel, cmd.id);
+        sendSignalHints(cmd.channel, cmd.id);
+        break;
     }
 }
 
@@ -385,6 +560,29 @@ void handleCommand(const char *text, size_t len)
         enqueuePendingCommand(pending);
         return;
     }
+    if (strcmp(cmd, "p4_watch") == 0)
+    {
+        const char *ch = doc["ch"] | nullptr;
+        const int id = doc["id"] | -1;
+        if (!analyzerWebParseChannelToken(ch, pending.channel) || id < 0 || id >= kStdIdCount)
+            return;
+        pending.type = PendingCmdType::P4Watch;
+        pending.id = static_cast<uint16_t>(id);
+        pending.on = doc["on"] | false;
+        enqueuePendingCommand(pending);
+        return;
+    }
+    if (strcmp(cmd, "p4_hints") == 0)
+    {
+        const char *ch = doc["ch"] | nullptr;
+        const int id = doc["id"] | -1;
+        if (!analyzerWebParseChannelToken(ch, pending.channel) || id < 0 || id >= kStdIdCount)
+            return;
+        pending.type = PendingCmdType::P4Hints;
+        pending.id = static_cast<uint16_t>(id);
+        enqueuePendingCommand(pending);
+        return;
+    }
 }
 
 void onWsEvent(AsyncWebSocket *, AsyncWebSocketClient *, AwsEventType type, void *arg, uint8_t *data, size_t len)
@@ -413,6 +611,8 @@ void drainQueueIntoTable()
             g_stats->noteRx(cap);
         if (g_pretrigger)
             g_pretrigger->push(cap);
+        if (g_signals)
+            g_signals->push(cap);
         g_table->update(cap);
         markDirty(cap.channel, cap.id);
     }
@@ -497,7 +697,8 @@ void pushBusStats()
 }
 
 void analyzerWebSetContext(FrameQueue *queue, IdTable *table, BusStatsTracker *stats,
-                           PretriggerBuffer *pretrigger, SnapshotStore *snapshots, LabelStore *labels)
+                           PretriggerBuffer *pretrigger, SnapshotStore *snapshots, LabelStore *labels,
+                           WatchedSignalWindow *signals, CommonSignalStore *common_signals)
 {
     g_queue = queue;
     g_table = table;
@@ -505,6 +706,8 @@ void analyzerWebSetContext(FrameQueue *queue, IdTable *table, BusStatsTracker *s
     g_pretrigger = pretrigger;
     g_snapshots = snapshots;
     g_labels = labels;
+    g_signals = signals;
+    g_commonSignals = common_signals;
 }
 
 void analyzerWebBegin()
@@ -569,6 +772,72 @@ void analyzerWebBegin()
         serializeJson(doc, out);
         request->send(200, "application/json", out);
     });
+
+    server.on("/api/p4/common", HTTP_GET, [](AsyncWebServerRequest *request) {
+        CommonSignalSpec snapshot[kMaxCommonSignals] = {};
+        const size_t signalCount = copyCommonSignals(snapshot, kMaxCommonSignals);
+
+        JsonDocument doc;
+        JsonArray signals = doc["signals"].to<JsonArray>();
+        for (size_t i = 0; i < signalCount; ++i)
+            jsonAddCommonSignal(signals, snapshot[i]);
+
+        String out;
+        serializeJson(doc, out);
+        request->send(200, "application/json", out);
+    });
+
+    server.on("/api/p4/common", HTTP_POST,
+              [](AsyncWebServerRequest *) {},
+              nullptr,
+              [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+                  if (!analyzerWebBodyChunkIsValid(index, len, total, kMaxCommonSignalsJsonBytes))
+                  {
+                      request->send(400, "application/json", "{\"ok\":false}");
+                      return;
+                  }
+
+                  if (index == 0)
+                      memset(g_commonSignalBody, 0, sizeof(g_commonSignalBody));
+                  if (len > 0)
+                      memcpy(g_commonSignalBody + index, data, len);
+                  if (!analyzerWebBodyChunkCompletes(index, len, total))
+                      return;
+
+                  JsonDocument doc;
+                  if (deserializeJson(doc, g_commonSignalBody, total))
+                  {
+                      request->send(400, "application/json", "{\"ok\":false}");
+                      return;
+                  }
+
+                  JsonArrayConst signals = doc["signals"].as<JsonArrayConst>();
+                  if (doc["signals"].isNull() || signals.isNull())
+                  {
+                      request->send(400, "application/json", "{\"ok\":false}");
+                      return;
+                  }
+
+                  CommonSignalSpec entries[kMaxCommonSignals] = {};
+                  size_t count = 0;
+                  for (JsonVariantConst item : signals)
+                  {
+                      if (count >= kMaxCommonSignals || !parseCommonSignalSpec(item, entries[count]))
+                      {
+                          request->send(400, "application/json", "{\"ok\":false}");
+                          return;
+                      }
+                      ++count;
+                  }
+
+                  if (!replaceCommonSignals(entries, count))
+                  {
+                      request->send(400, "application/json", "{\"ok\":false}");
+                      return;
+                  }
+
+                  request->send(200, "application/json", "{\"ok\":true}");
+              });
 
     server.serveStatic("/", LittleFS, "/").setDefaultFile("index.html");
     server.begin();

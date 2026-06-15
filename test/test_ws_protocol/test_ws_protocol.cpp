@@ -216,6 +216,205 @@ void test_baseline_respects_buffer_cap()
     TEST_ASSERT_EQUAL_UINT16(0x111, out[0].id);
 }
 
+void test_signal_samples_layout()
+{
+    WsSignalSampleRecord recs[2];
+    memset(recs, 0, sizeof(recs));
+    recs[0].channel = 1;
+    recs[0].id = 0x321;
+    recs[0].dlc = 4;
+    recs[0].data[0] = 0x10;
+    recs[0].data[1] = 0x20;
+    recs[0].data[2] = 0x30;
+    recs[0].data[3] = 0x40;
+    recs[0].sample_age_ms = 250;
+    recs[0].sequence_lo = 0x10203040;
+    recs[1].channel = 0;
+    recs[1].id = 0x123;
+    recs[1].dlc = 2;
+    recs[1].data[0] = 0xAA;
+    recs[1].data[1] = 0xBB;
+    recs[1].sample_age_ms = 12;
+    recs[1].sequence_lo = 77;
+
+    uint8_t buf[128];
+    const size_t n = wsBuildSignalSamples(buf, sizeof(buf), recs, 2);
+
+    TEST_ASSERT_EQUAL_UINT8(WS_MSG_SIGNAL, buf[0]);
+    TEST_ASSERT_EQUAL_UINT8(WS_SIGNAL_SAMPLES, buf[1]);
+    TEST_ASSERT_EQUAL_UINT8(2, buf[2]);
+    TEST_ASSERT_EQUAL_size_t(3 + 2 * sizeof(WsSignalSampleRecord), n);
+    const WsSignalSampleRecord *out = reinterpret_cast<const WsSignalSampleRecord *>(buf + 3);
+    TEST_ASSERT_EQUAL_UINT8(1, out[0].channel);
+    TEST_ASSERT_EQUAL_UINT16(0x321, out[0].id);
+    TEST_ASSERT_EQUAL_UINT8(4, out[0].dlc);
+    TEST_ASSERT_EQUAL_UINT8(0x30, out[0].data[2]);
+    TEST_ASSERT_EQUAL_UINT16(250, out[0].sample_age_ms);
+    TEST_ASSERT_EQUAL_UINT32(0x10203040, out[0].sequence_lo);
+    TEST_ASSERT_EQUAL_UINT8(0, out[1].channel);
+    TEST_ASSERT_EQUAL_UINT16(0x123, out[1].id);
+    TEST_ASSERT_EQUAL_UINT8(0xBB, out[1].data[1]);
+    TEST_ASSERT_EQUAL_UINT32(77, out[1].sequence_lo);
+}
+
+void test_signal_hints_layout()
+{
+    WsSignalHintRecord recs[2];
+    memset(recs, 0, sizeof(recs));
+    recs[0].kind = 3;
+    recs[0].start_bit = 12;
+    recs[0].bit_length = 16;
+    recs[0].confidence_x1000 = 875;
+    memcpy(recs[0].evidence, "rpm", 4);
+    recs[1].kind = 7;
+    recs[1].start_bit = 40;
+    recs[1].bit_length = 8;
+    recs[1].confidence_x1000 = 1000;
+    memcpy(recs[1].evidence, "gear=4", 7);
+
+    uint8_t buf[128];
+    const size_t n = wsBuildSignalHints(buf, sizeof(buf), recs, 2);
+
+    TEST_ASSERT_EQUAL_UINT8(WS_MSG_SIGNAL, buf[0]);
+    TEST_ASSERT_EQUAL_UINT8(WS_SIGNAL_HINTS, buf[1]);
+    TEST_ASSERT_EQUAL_UINT8(2, buf[2]);
+    TEST_ASSERT_EQUAL_size_t(3 + 2 * sizeof(WsSignalHintRecord), n);
+    const WsSignalHintRecord *out = reinterpret_cast<const WsSignalHintRecord *>(buf + 3);
+    TEST_ASSERT_EQUAL_UINT8(3, out[0].kind);
+    TEST_ASSERT_EQUAL_UINT8(12, out[0].start_bit);
+    TEST_ASSERT_EQUAL_UINT8(16, out[0].bit_length);
+    TEST_ASSERT_EQUAL_UINT16(875, out[0].confidence_x1000);
+    TEST_ASSERT_EQUAL_UINT8('r', out[0].evidence[0]);
+    TEST_ASSERT_EQUAL_UINT8('m', out[0].evidence[2]);
+    TEST_ASSERT_EQUAL_UINT8('\0', out[0].evidence[3]);
+    TEST_ASSERT_EQUAL_UINT8(7, out[1].kind);
+    TEST_ASSERT_EQUAL_UINT8(40, out[1].start_bit);
+    TEST_ASSERT_EQUAL_UINT16(1000, out[1].confidence_x1000);
+    TEST_ASSERT_EQUAL_UINT8('4', out[1].evidence[5]);
+    TEST_ASSERT_EQUAL_UINT8('\0', out[1].evidence[6]);
+}
+
+void test_signal_builders_allow_zero_count_null_records()
+{
+    uint8_t buf[8];
+    memset(buf, 0xCC, sizeof(buf));
+
+    size_t n = wsBuildSignalSamples(buf, sizeof(buf), nullptr, 0);
+    TEST_ASSERT_EQUAL_size_t(3, n);
+    TEST_ASSERT_EQUAL_UINT8(WS_MSG_SIGNAL, buf[0]);
+    TEST_ASSERT_EQUAL_UINT8(WS_SIGNAL_SAMPLES, buf[1]);
+    TEST_ASSERT_EQUAL_UINT8(0, buf[2]);
+    TEST_ASSERT_EQUAL_UINT8(0xCC, buf[3]);
+
+    memset(buf, 0xCC, sizeof(buf));
+    n = wsBuildSignalHints(buf, sizeof(buf), nullptr, 0);
+    TEST_ASSERT_EQUAL_size_t(3, n);
+    TEST_ASSERT_EQUAL_UINT8(WS_MSG_SIGNAL, buf[0]);
+    TEST_ASSERT_EQUAL_UINT8(WS_SIGNAL_HINTS, buf[1]);
+    TEST_ASSERT_EQUAL_UINT8(0, buf[2]);
+    TEST_ASSERT_EQUAL_UINT8(0xCC, buf[3]);
+}
+
+void test_signal_builders_reject_too_small_cap()
+{
+    WsSignalSampleRecord sample;
+    memset(&sample, 0, sizeof(sample));
+    WsSignalHintRecord hint;
+    memset(&hint, 0, sizeof(hint));
+    uint8_t buf[2];
+    memset(buf, 0xCC, sizeof(buf));
+
+    TEST_ASSERT_EQUAL_size_t(0, wsBuildSignalSamples(buf, sizeof(buf), &sample, 1));
+    TEST_ASSERT_EQUAL_size_t(0, wsBuildSignalHints(buf, sizeof(buf), &hint, 1));
+}
+
+void test_signal_builders_exact_header_cap()
+{
+    WsSignalSampleRecord sample;
+    memset(&sample, 0, sizeof(sample));
+    sample.channel = 1;
+    sample.id = 0x456;
+    WsSignalHintRecord hint;
+    memset(&hint, 0, sizeof(hint));
+    hint.kind = 2;
+    uint8_t buf[3];
+
+    size_t n = wsBuildSignalSamples(buf, sizeof(buf), &sample, 1);
+    TEST_ASSERT_EQUAL_size_t(3, n);
+    TEST_ASSERT_EQUAL_UINT8(WS_MSG_SIGNAL, buf[0]);
+    TEST_ASSERT_EQUAL_UINT8(WS_SIGNAL_SAMPLES, buf[1]);
+    TEST_ASSERT_EQUAL_UINT8(0, buf[2]);
+
+    n = wsBuildSignalHints(buf, sizeof(buf), &hint, 1);
+    TEST_ASSERT_EQUAL_size_t(3, n);
+    TEST_ASSERT_EQUAL_UINT8(WS_MSG_SIGNAL, buf[0]);
+    TEST_ASSERT_EQUAL_UINT8(WS_SIGNAL_HINTS, buf[1]);
+    TEST_ASSERT_EQUAL_UINT8(0, buf[2]);
+}
+
+void test_signal_samples_respect_buffer_cap()
+{
+    WsSignalSampleRecord recs[2];
+    memset(recs, 0, sizeof(recs));
+    recs[0].id = 0x101;
+    recs[1].id = 0x202;
+
+    uint8_t buf[3 + sizeof(WsSignalSampleRecord) + 1];
+    const size_t n = wsBuildSignalSamples(buf, sizeof(buf), recs, 2);
+
+    TEST_ASSERT_EQUAL_size_t(3 + sizeof(WsSignalSampleRecord), n);
+    TEST_ASSERT_EQUAL_UINT8(WS_MSG_SIGNAL, buf[0]);
+    TEST_ASSERT_EQUAL_UINT8(WS_SIGNAL_SAMPLES, buf[1]);
+    TEST_ASSERT_EQUAL_UINT8(1, buf[2]);
+    const WsSignalSampleRecord *out = reinterpret_cast<const WsSignalSampleRecord *>(buf + 3);
+    TEST_ASSERT_EQUAL_UINT16(0x101, out[0].id);
+}
+
+void test_signal_hints_respect_buffer_cap()
+{
+    WsSignalHintRecord recs[2];
+    memset(recs, 0, sizeof(recs));
+    recs[0].kind = 4;
+    recs[1].kind = 5;
+
+    uint8_t buf[3 + sizeof(WsSignalHintRecord) + 1];
+    const size_t n = wsBuildSignalHints(buf, sizeof(buf), recs, 2);
+
+    TEST_ASSERT_EQUAL_size_t(3 + sizeof(WsSignalHintRecord), n);
+    TEST_ASSERT_EQUAL_UINT8(WS_MSG_SIGNAL, buf[0]);
+    TEST_ASSERT_EQUAL_UINT8(WS_SIGNAL_HINTS, buf[1]);
+    TEST_ASSERT_EQUAL_UINT8(1, buf[2]);
+    const WsSignalHintRecord *out = reinterpret_cast<const WsSignalHintRecord *>(buf + 3);
+    TEST_ASSERT_EQUAL_UINT8(4, out[0].kind);
+}
+
+void test_analyzer_web_signal_helpers_clamp_confidence_and_age()
+{
+    TEST_ASSERT_EQUAL_UINT16(0, analyzerWebConfidenceX1000ForTest(-0.1f));
+    TEST_ASSERT_EQUAL_UINT16(0, analyzerWebConfidenceX1000ForTest(0.0f));
+    TEST_ASSERT_EQUAL_UINT16(875, analyzerWebConfidenceX1000ForTest(0.8746f));
+    TEST_ASSERT_EQUAL_UINT16(1000, analyzerWebConfidenceX1000ForTest(1.0f));
+    TEST_ASSERT_EQUAL_UINT16(1000, analyzerWebConfidenceX1000ForTest(1.25f));
+
+    TEST_ASSERT_EQUAL_UINT16(500, analyzerWebSampleAgeMsForTest(2000000ULL, 1500000ULL));
+    TEST_ASSERT_EQUAL_UINT16(0, analyzerWebSampleAgeMsForTest(1500000ULL, 2000000ULL));
+    TEST_ASSERT_EQUAL_UINT16(65535, analyzerWebSampleAgeMsForTest(70000000ULL, 0ULL));
+}
+
+void test_analyzer_web_body_chunk_helpers_validate_bounds_and_completion()
+{
+    TEST_ASSERT_TRUE(analyzerWebBodyChunkIsValidForTest(0, 32, 64, 128));
+    TEST_ASSERT_TRUE(analyzerWebBodyChunkIsValidForTest(32, 32, 64, 128));
+    TEST_ASSERT_FALSE(analyzerWebBodyChunkIsValidForTest(0, 129, 129, 128));
+    TEST_ASSERT_FALSE(analyzerWebBodyChunkIsValidForTest(65, 1, 64, 128));
+    TEST_ASSERT_FALSE(analyzerWebBodyChunkIsValidForTest(63, 2, 64, 128));
+
+    TEST_ASSERT_FALSE(analyzerWebBodyChunkCompletesForTest(0, 32, 64));
+    TEST_ASSERT_TRUE(analyzerWebBodyChunkCompletesForTest(32, 32, 64));
+    TEST_ASSERT_TRUE(analyzerWebBodyChunkCompletesForTest(0, 0, 0));
+    TEST_ASSERT_FALSE(analyzerWebBodyChunkCompletesForTest(64, 1, 64));
+}
+
 void test_analyzer_web_parses_only_explicit_valid_channels_and_slots()
 {
     uint8_t channel = 99;
@@ -258,6 +457,15 @@ int main(int, char **)
     RUN_TEST(test_pretrigger_layout_and_cap);
     RUN_TEST(test_baseline_layout);
     RUN_TEST(test_baseline_respects_buffer_cap);
+    RUN_TEST(test_signal_samples_layout);
+    RUN_TEST(test_signal_hints_layout);
+    RUN_TEST(test_signal_builders_allow_zero_count_null_records);
+    RUN_TEST(test_signal_builders_reject_too_small_cap);
+    RUN_TEST(test_signal_builders_exact_header_cap);
+    RUN_TEST(test_signal_samples_respect_buffer_cap);
+    RUN_TEST(test_signal_hints_respect_buffer_cap);
+    RUN_TEST(test_analyzer_web_signal_helpers_clamp_confidence_and_age);
+    RUN_TEST(test_analyzer_web_body_chunk_helpers_validate_bounds_and_completion);
     RUN_TEST(test_analyzer_web_parses_only_explicit_valid_channels_and_slots);
     return UNITY_END();
 }

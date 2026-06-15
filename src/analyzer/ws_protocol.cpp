@@ -31,7 +31,7 @@ size_t wsBuildBusStats(uint8_t *buf, size_t cap, const WsBusStats &stats)
 namespace
 {
 template <typename T>
-size_t wsBuildDiffRecords(uint8_t *buf, size_t cap, WsDiffSubtype subtype, const T *recs, uint8_t count)
+size_t wsBuildRecordFamily(uint8_t *buf, size_t cap, uint8_t msgType, uint8_t subtype, const T *recs, uint8_t count)
 {
     if (cap < 3)
         return 0;
@@ -41,12 +41,24 @@ size_t wsBuildDiffRecords(uint8_t *buf, size_t cap, WsDiffSubtype subtype, const
     if (maxByCap > count)
         maxByCap = count;
 
-    buf[0] = WS_MSG_DIFF;
+    buf[0] = msgType;
     buf[1] = subtype;
     buf[2] = static_cast<uint8_t>(maxByCap);
     if (maxByCap > 0)
         memcpy(buf + 3, recs, maxByCap * recSize);
     return 3 + maxByCap * recSize;
+}
+
+template <typename T>
+size_t wsBuildDiffRecords(uint8_t *buf, size_t cap, WsDiffSubtype subtype, const T *recs, uint8_t count)
+{
+    return wsBuildRecordFamily(buf, cap, WS_MSG_DIFF, static_cast<uint8_t>(subtype), recs, count);
+}
+
+template <typename T>
+size_t wsBuildSignalRecords(uint8_t *buf, size_t cap, WsSignalSubtype subtype, const T *recs, uint8_t count)
+{
+    return wsBuildRecordFamily(buf, cap, WS_MSG_SIGNAL, static_cast<uint8_t>(subtype), recs, count);
 }
 }
 
@@ -63,4 +75,14 @@ size_t wsBuildPretrigger(uint8_t *buf, size_t cap, const WsPretriggerRecord *rec
 size_t wsBuildBaseline(uint8_t *buf, size_t cap, const WsBaselineRecord *recs, uint8_t count)
 {
     return wsBuildDiffRecords(buf, cap, WS_DIFF_BASELINE, recs, count);
+}
+
+size_t wsBuildSignalSamples(uint8_t *buf, size_t cap, const WsSignalSampleRecord *recs, uint8_t count)
+{
+    return wsBuildSignalRecords(buf, cap, WS_SIGNAL_SAMPLES, recs, count);
+}
+
+size_t wsBuildSignalHints(uint8_t *buf, size_t cap, const WsSignalHintRecord *recs, uint8_t count)
+{
+    return wsBuildSignalRecords(buf, cap, WS_SIGNAL_HINTS, recs, count);
 }
