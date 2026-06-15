@@ -46,7 +46,7 @@ RawSamplePoint *g_signalSamples = nullptr;
 WatchedSignalWindow g_signalWindow;
 CommonSignalStore g_commonSignals;
 
-constexpr size_t kRecordCapacity = 100000;
+constexpr size_t kRecordCapacity = 100000;   // ~24B/帧 ≈ 2.4MB PSRAM
 CapturedFrame *g_recordStorage = nullptr;
 Recorder g_recorder;
 

@@ -4,7 +4,9 @@
 #include "analyzer_types.h"
 
 // 会话式录制器：固定容量环形缓冲，满则覆盖最旧帧并累加 dropped。
-// 单生产者(drain)单消费者(download)，本架构同核串行，无内部锁。
+// 无内部锁。push 由 Core1 drain 调用（仅 active 时）；collect 由 AsyncTCP 下载
+// 任务调用。二者互斥靠「下载仅在 stop 后允许」保证（download 路由拒绝 active）。
+// start/stop 经 pending 队列串行化，与 drain 同在 Core1 loop，无竞争。
 class Recorder
 {
 public:

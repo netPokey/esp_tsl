@@ -879,6 +879,13 @@ void analyzerWebBegin()
             request->send(404, "text/plain", "no recording");
             return;
         }
+        // 录制中拒绝下载：collect 在 AsyncTCP 任务执行，push 在 Core1 drain；
+        // 二者无锁，仅靠「下载时已 stop」保证互斥，否则会读到撕裂帧/基准漂移。
+        if (g_recorder->active())
+        {
+            request->send(409, "text/plain", "stop recording first");
+            return;
+        }
         auto cursor = std::make_shared<RecordCsvCursor>();
         const size_t total = g_recorder->count();
         AsyncWebServerResponse *response = request->beginChunkedResponse(
