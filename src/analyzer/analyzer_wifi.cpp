@@ -9,7 +9,7 @@
 namespace
 {
 #if defined(ARDUINO)
-constexpr const char *kPrefsNs = "an_wifi";
+constexpr const char *kPrefsNs = "analyzer_wifi";
 constexpr const char *kPrefsSsid = "ssid";
 constexpr const char *kPrefsPass = "pass";
 constexpr const char *kApSsid = "CAN-Analyzer";
@@ -45,9 +45,10 @@ bool saveCredentials(const AnalyzerWifiCredentials &c)
     Preferences prefs;
     if (!prefs.begin(kPrefsNs, false))
         return false;
-    const bool ok = prefs.putString(kPrefsSsid, c.ssid) > 0 && prefs.putString(kPrefsPass, c.pass) >= 0;
+    const size_t ssidWritten = prefs.putString(kPrefsSsid, c.ssid);
+    const size_t passWritten = prefs.putString(kPrefsPass, c.pass);
     prefs.end();
-    return ok;
+    return ssidWritten > 0 && passWritten == strlen(c.pass);
 }
 #endif
 }
@@ -114,7 +115,8 @@ bool analyzerWifiSaveAndConnect(const char *ssid, const char *pass)
     AnalyzerWifiCredentials c;
     if (!analyzerWifiSanitizeCredentials(ssid, pass, c))
         return false;
-    saveCredentials(c);
+    if (!saveCredentials(c))
+        return false;
     WiFi.disconnect(true);
     delay(100);
     if (trySta(c.ssid, c.pass))
