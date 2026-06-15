@@ -1,5 +1,6 @@
 #include "analyzer/analyzer_web.h"
 #include "analyzer/analyzer_control.h"
+#include "analyzer/analyzer_wifi.h"
 #include "analyzer/record_format.h"
 #include "analyzer/recorder.h"
 #include "analyzer/signal_hints.h"
@@ -10,7 +11,9 @@
 #include <ArduinoJson.h>
 #include <ESPAsyncWebServer.h>
 #include <LittleFS.h>
+#include <WiFi.h>
 #include <cstring>
+#include <esp_sleep.h>
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
 #include <memory>
@@ -87,6 +90,7 @@ struct PendingCmd
 constexpr size_t kPendingCmdCap = 8;
 constexpr size_t kMaxWsCommandBytes = 256;
 constexpr size_t kMaxCommonSignalsJsonBytes = 4096;
+constexpr size_t kMaxWifiJsonBytes = 256;
 PendingCmd g_pending[kPendingCmdCap];
 volatile size_t g_pendingHead = 0;
 volatile size_t g_pendingTail = 0;
@@ -94,6 +98,7 @@ uint32_t g_pendingDropped = 0;
 portMUX_TYPE g_pendingMux = portMUX_INITIALIZER_UNLOCKED;
 portMUX_TYPE g_labelMux = portMUX_INITIALIZER_UNLOCKED;
 char g_commonSignalBody[kMaxCommonSignalsJsonBytes] = {};
+char g_wifiBody[kMaxWifiJsonBytes] = {};
 
 bool labelUpsert(uint8_t channel, uint16_t id, const char *text)
 {
@@ -152,6 +157,22 @@ bool replaceCommonSignals(const CommonSignalSpec *entries, size_t count)
     if (!g_commonSignals)
         return false;
     return g_commonSignals->replaceAll(entries, count);
+}
+
+String wifiStatusJson(bool ok = true, bool connected = false, bool includeConnected = false)
+{
+    const AnalyzerWifiStatus st = analyzerWifiStatus();
+    JsonDocument doc;
+    doc["ok"] = ok;
+    if (includeConnected)
+        doc["connected"] = connected;
+    doc["mode"] = st.sta ? "sta" : (st.ap ? "ap" : "off");
+    doc["ip"] = st.ip;
+    doc["ssid"] = st.ssid;
+    doc["pass"] = st.pass;
+    String out;
+    serializeJson(doc, out);
+    return out;
 }
 
 bool parseCommonSignalSpec(JsonVariantConst src, CommonSignalSpec &out)
@@ -759,6 +780,55 @@ void analyzerWebBegin()
         out += ",\"record_dropped\":" + String(g_recorder ? g_recorder->dropped() : 0);
         out += "}";
         request->send(200, "application/json", out);
+    });
+
+    server.on("/api/wifi", HTTP_GET, [](AsyncWebServerRequest *request) {
+        request->send(200, "application/json", wifiStatusJson());
+    });
+
+    server.on("/api/wifi", HTTP_POST,
+              [](AsyncWebServerRequest *) {},
+              nullptr,
+              [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+                  if (!analyzerWebBodyChunkIsValid(index, len, total, kMaxWifiJsonBytes))
+                  {
+                      request->send(400, "application/json", "{\"ok\":false}");
+                      return;
+                  }
+                  if (index == 0)
+                      memset(g_wifiBody, 0, sizeof(g_wifiBody));
+                  if (len > 0)
+                      memcpy(g_wifiBody + index, data, len);
+                  if (!analyzerWebBodyChunkCompletes(index, len, total))
+                      return;
+
+                  JsonDocument doc;
+                  if (deserializeJson(doc, g_wifiBody, total))
+                  {
+                      request->send(400, "application/json", "{\"ok\":false}");
+                      return;
+                  }
+                  const char *ssid = doc["ssid"] | "";
+                  const char *pass = doc["pass"] | "";
+                  const bool connected = analyzerWifiSaveAndConnect(ssid, pass);
+                  request->send(200, "application/json", wifiStatusJson(true, connected, true));
+              });
+
+    server.on("/api/restart", HTTP_POST, [](AsyncWebServerRequest *request) {
+        request->send(200, "application/json", "{\"ok\":true}");
+        delay(200);
+        ESP.restart();
+    });
+
+    server.on("/api/shutdown", HTTP_POST, [](AsyncWebServerRequest *request) {
+        request->send(200, "application/json", "{\"ok\":true}");
+        setCanTxEnabled(false);
+        setAnalyzerChannelTxEnabled(0, false);
+        setAnalyzerChannelTxEnabled(1, false);
+        delay(200);
+        WiFi.disconnect(true);
+        WiFi.mode(WIFI_OFF);
+        esp_deep_sleep_start();
     });
 
     server.on("/api/can-tx", HTTP_POST,
