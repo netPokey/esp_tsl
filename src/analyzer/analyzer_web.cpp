@@ -91,14 +91,31 @@ constexpr size_t kPendingCmdCap = 8;
 constexpr size_t kMaxWsCommandBytes = 256;
 constexpr size_t kMaxCommonSignalsJsonBytes = 4096;
 constexpr size_t kMaxWifiJsonBytes = 256;
+constexpr uint32_t kPowerActionDelayMs = 200;
+constexpr uint32_t kShutdownSleepDelayMs = 100;
 PendingCmd g_pending[kPendingCmdCap];
 volatile size_t g_pendingHead = 0;
 volatile size_t g_pendingTail = 0;
 uint32_t g_pendingDropped = 0;
 portMUX_TYPE g_pendingMux = portMUX_INITIALIZER_UNLOCKED;
 portMUX_TYPE g_labelMux = portMUX_INITIALIZER_UNLOCKED;
+portMUX_TYPE g_wifiMux = portMUX_INITIALIZER_UNLOCKED;
+portMUX_TYPE g_powerMux = portMUX_INITIALIZER_UNLOCKED;
 char g_commonSignalBody[kMaxCommonSignalsJsonBytes] = {};
-char g_wifiBody[kMaxWifiJsonBytes] = {};
+char g_wifiBody[kMaxWifiJsonBytes + 1] = {};
+AnalyzerWifiCredentials g_pendingWifi;
+volatile bool g_pendingWifiValid = false;
+
+enum class PendingPowerAction : uint8_t
+{
+    None,
+    Restart,
+    ShutdownPrepare,
+    ShutdownSleep
+};
+
+volatile PendingPowerAction g_pendingPowerAction = PendingPowerAction::None;
+volatile uint32_t g_pendingPowerExecuteAfterMs = 0;
 
 bool labelUpsert(uint8_t channel, uint16_t id, const char *text)
 {
@@ -459,6 +476,93 @@ bool dequeuePendingCommand(PendingCmd &cmd)
     return found;
 }
 
+void enqueuePendingWifi(const AnalyzerWifiCredentials &credentials)
+{
+    portENTER_CRITICAL(&g_wifiMux);
+    g_pendingWifi = credentials;
+    g_pendingWifiValid = true;
+    portEXIT_CRITICAL(&g_wifiMux);
+}
+
+bool takePendingWifi(AnalyzerWifiCredentials &credentials)
+{
+    bool found = false;
+    portENTER_CRITICAL(&g_wifiMux);
+    if (g_pendingWifiValid)
+    {
+        credentials = g_pendingWifi;
+        g_pendingWifiValid = false;
+        found = true;
+    }
+    portEXIT_CRITICAL(&g_wifiMux);
+    return found;
+}
+
+void enqueuePendingPowerAction(PendingPowerAction action, uint32_t executeAfterMs)
+{
+    portENTER_CRITICAL(&g_powerMux);
+    g_pendingPowerAction = action;
+    g_pendingPowerExecuteAfterMs = executeAfterMs;
+    portEXIT_CRITICAL(&g_powerMux);
+}
+
+PendingPowerAction peekPendingPowerAction(uint32_t &executeAfterMs)
+{
+    portENTER_CRITICAL(&g_powerMux);
+    const PendingPowerAction action = g_pendingPowerAction;
+    executeAfterMs = g_pendingPowerExecuteAfterMs;
+    portEXIT_CRITICAL(&g_powerMux);
+    return action;
+}
+
+void clearPendingPowerAction(PendingPowerAction action)
+{
+    portENTER_CRITICAL(&g_powerMux);
+    if (g_pendingPowerAction == action)
+    {
+        g_pendingPowerAction = PendingPowerAction::None;
+        g_pendingPowerExecuteAfterMs = 0;
+    }
+    portEXIT_CRITICAL(&g_powerMux);
+}
+
+void processPendingWifi()
+{
+    AnalyzerWifiCredentials credentials;
+    if (takePendingWifi(credentials))
+        analyzerWifiSaveAndConnect(credentials.ssid, credentials.pass);
+}
+
+void processPendingPowerAction()
+{
+    uint32_t executeAfterMs = 0;
+    const PendingPowerAction action = peekPendingPowerAction(executeAfterMs);
+    if (action == PendingPowerAction::None || static_cast<int32_t>(millis() - executeAfterMs) < 0)
+        return;
+
+    switch (action)
+    {
+    case PendingPowerAction::Restart:
+        clearPendingPowerAction(action);
+        ESP.restart();
+        break;
+    case PendingPowerAction::ShutdownPrepare:
+        setCanTxEnabled(false);
+        setAnalyzerChannelTxEnabled(0, false);
+        setAnalyzerChannelTxEnabled(1, false);
+        enqueuePendingPowerAction(PendingPowerAction::ShutdownSleep, millis() + kShutdownSleepDelayMs);
+        break;
+    case PendingPowerAction::ShutdownSleep:
+        clearPendingPowerAction(action);
+        WiFi.disconnect(true);
+        WiFi.mode(WIFI_OFF);
+        esp_deep_sleep_start();
+        break;
+    case PendingPowerAction::None:
+        break;
+    }
+}
+
 void processPendingCommand(const PendingCmd &cmd)
 {
     switch (cmd.type)
@@ -801,6 +905,7 @@ void analyzerWebBegin()
                       memcpy(g_wifiBody + index, data, len);
                   if (!analyzerWebBodyChunkCompletes(index, len, total))
                       return;
+                  g_wifiBody[total] = '\0';
 
                   JsonDocument doc;
                   if (deserializeJson(doc, g_wifiBody, total))
@@ -808,27 +913,24 @@ void analyzerWebBegin()
                       request->send(400, "application/json", "{\"ok\":false}");
                       return;
                   }
-                  const char *ssid = doc["ssid"] | "";
-                  const char *pass = doc["pass"] | "";
-                  const bool connected = analyzerWifiSaveAndConnect(ssid, pass);
-                  request->send(200, "application/json", wifiStatusJson(true, connected, true));
+                  AnalyzerWifiCredentials credentials;
+                  if (!analyzerWifiSanitizeCredentials(doc["ssid"] | "", doc["pass"] | "", credentials))
+                  {
+                      request->send(400, "application/json", "{\"ok\":false}");
+                      return;
+                  }
+                  enqueuePendingWifi(credentials);
+                  request->send(200, "application/json", "{\"ok\":true,\"pending\":true}");
               });
 
     server.on("/api/restart", HTTP_POST, [](AsyncWebServerRequest *request) {
-        request->send(200, "application/json", "{\"ok\":true}");
-        delay(200);
-        ESP.restart();
+        enqueuePendingPowerAction(PendingPowerAction::Restart, millis() + kPowerActionDelayMs);
+        request->send(200, "application/json", "{\"ok\":true,\"pending\":true}");
     });
 
     server.on("/api/shutdown", HTTP_POST, [](AsyncWebServerRequest *request) {
-        request->send(200, "application/json", "{\"ok\":true}");
-        setCanTxEnabled(false);
-        setAnalyzerChannelTxEnabled(0, false);
-        setAnalyzerChannelTxEnabled(1, false);
-        delay(200);
-        WiFi.disconnect(true);
-        WiFi.mode(WIFI_OFF);
-        esp_deep_sleep_start();
+        enqueuePendingPowerAction(PendingPowerAction::ShutdownPrepare, millis() + kPowerActionDelayMs);
+        request->send(200, "application/json", "{\"ok\":true,\"pending\":true}");
     });
 
     server.on("/api/can-tx", HTTP_POST,
@@ -983,6 +1085,8 @@ void analyzerWebLoop()
 {
     drainQueueIntoTable();
     processPendingCommands();
+    processPendingWifi();
+    processPendingPowerAction();
     ws.cleanupClients();
 
     const uint32_t now = millis();
