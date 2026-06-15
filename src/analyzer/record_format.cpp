@@ -47,3 +47,33 @@ size_t recordCsvLine(char *out, size_t cap, const CapturedFrame &frame, uint64_t
     memcpy(out, tmp, pos + 1);
     return pos;
 }
+
+size_t recordCsvFill(char *buf, size_t maxLen, const Recorder &rec, size_t total, RecordCsvCursor &cursor)
+{
+    size_t written = 0;
+    if (!cursor.header_sent)
+    {
+        size_t h = recordCsvHeader(buf, maxLen);
+        if (h == 0)
+            return 0;
+        cursor.header_sent = true;
+        written = h;
+    }
+    while (cursor.frame_index < total)
+    {
+        CapturedFrame f;
+        if (rec.collect(&f, 1, cursor.frame_index) == 0)
+            break;
+        if (!cursor.base_set)
+        {
+            cursor.base_ts_us = f.ts_us;
+            cursor.base_set = true;
+        }
+        size_t w = recordCsvLine(buf + written, maxLen - written, f, cursor.base_ts_us);
+        if (w == 0)
+            break;
+        written += w;
+        ++cursor.frame_index;
+    }
+    return written;
+}

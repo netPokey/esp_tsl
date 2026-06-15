@@ -1,0 +1,104 @@
+#include <unity.h>
+#include <string>
+#include "analyzer/record_format.h"
+#include "analyzer/recorder.h"
+
+static CapturedFrame mk(uint32_t id, uint64_t ts_us)
+{
+    CapturedFrame f = {};
+    f.id = id;
+    f.dlc = 1;
+    f.channel = 0;
+    f.ts_us = ts_us;
+    f.data[0] = 0xAB;
+    return f;
+}
+
+void test_empty_recorder_emits_header_only()
+{
+    CapturedFrame storage[4];
+    Recorder r;
+    r.init(storage, 4);
+    r.start();
+    RecordCsvCursor cur;
+    char buf[256];
+    size_t n = recordCsvFill(buf, sizeof(buf), r, r.count(), cur);
+    buf[n] = '\0';
+    TEST_ASSERT_EQUAL_STRING("time_s,channel,id,dlc,data\n", buf);
+    TEST_ASSERT_EQUAL_UINT(0, recordCsvFill(buf, sizeof(buf), r, r.count(), cur));
+}
+
+void test_single_call_header_plus_all_lines()
+{
+    CapturedFrame storage[4];
+    Recorder r;
+    r.init(storage, 4);
+    r.start();
+    r.push(mk(0x100, 1000000ULL));
+    r.push(mk(0x101, 1500000ULL));
+    RecordCsvCursor cur;
+    char buf[512];
+    size_t n = recordCsvFill(buf, sizeof(buf), r, r.count(), cur);
+    buf[n] = '\0';
+    std::string s(buf);
+    TEST_ASSERT_EQUAL_STRING(
+        "time_s,channel,id,dlc,data\n"
+        "0.000000,A,0x100,1,AB\n"
+        "0.500000,A,0x101,1,AB\n",
+        s.c_str());
+    TEST_ASSERT_EQUAL_UINT(0, recordCsvFill(buf, sizeof(buf), r, r.count(), cur));
+}
+
+void test_small_buffer_resumes_across_calls()
+{
+    CapturedFrame storage[8];
+    Recorder r;
+    r.init(storage, 8);
+    r.start();
+    for (uint32_t i = 0; i < 5; ++i)
+        r.push(mk(0x200 + i, 1000000ULL + i * 1000000ULL));
+    const size_t total = r.count();
+    RecordCsvCursor curBig;
+    char big[1024];
+    size_t bigN = recordCsvFill(big, sizeof(big), r, total, curBig);
+    big[bigN] = '\0';
+
+    RecordCsvCursor curSmall;
+    std::string acc;
+    char small[40];
+    for (int guard = 0; guard < 100; ++guard)
+    {
+        size_t m = recordCsvFill(small, sizeof(small), r, total, curSmall);
+        if (m == 0)
+            break;
+        acc.append(small, m);
+    }
+    TEST_ASSERT_EQUAL_STRING(big, acc.c_str());
+}
+
+void test_base_ts_taken_from_oldest_frame()
+{
+    CapturedFrame storage[4];
+    Recorder r;
+    r.init(storage, 4);
+    r.start();
+    r.push(mk(0x300, 5000000ULL));
+    r.push(mk(0x301, 7000000ULL));
+    RecordCsvCursor cur;
+    char buf[512];
+    size_t n = recordCsvFill(buf, sizeof(buf), r, r.count(), cur);
+    buf[n] = '\0';
+    std::string s(buf);
+    TEST_ASSERT_TRUE(s.find("0.000000,A,0x300") != std::string::npos);
+    TEST_ASSERT_TRUE(s.find("2.000000,A,0x301") != std::string::npos);
+}
+
+int main(int, char **)
+{
+    UNITY_BEGIN();
+    RUN_TEST(test_empty_recorder_emits_header_only);
+    RUN_TEST(test_single_call_header_plus_all_lines);
+    RUN_TEST(test_small_buffer_resumes_across_calls);
+    RUN_TEST(test_base_ts_taken_from_oldest_frame);
+    return UNITY_END();
+}
