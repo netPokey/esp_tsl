@@ -88,7 +88,14 @@ function endianToWire(endian) { return endian === 'motorola' || endian === 1 || 
 function endianToText(endian) { return endian === 1 || endian === '1' || endian === 'motorola' ? 'motorola' : 'intel'; }
 function signedToBool(value) { return value === true || value === 1 || value === '1'; }
 function displayToText(value) { return value === 'raw' || value === 'step' ? value : 'line'; }
-function statusSignal(text) { signalStatusEl.textContent = `${text} · browser workset=${signalSpecs.length}`; }
+function endianLabel(value) { return endianToText(value) === 'motorola' ? 'Motorola 大端' : 'Intel 小端'; }
+function displayLabel(value) {
+  const v = displayToText(value);
+  if (v === 'raw') return '原始值';
+  if (v === 'step') return '阶梯';
+  return '折线';
+}
+function statusSignal(text) { signalStatusEl.textContent = `${text} · 浏览器工作集=${signalSpecs.length}`; }
 
 function formatByte(b) {
   switch (baseSelect.value) {
@@ -183,7 +190,7 @@ function rowHidden(rec) {
 function appendIdCell(cell, rec) {
   clearNode(cell);
   cell.className = 'selectable-id';
-  cell.title = '选择 Signal Workbench target';
+  cell.title = '选择信号工作台目标';
   cell.onclick = (ev) => { ev.stopPropagation(); selectSignalTarget(rec.ch, rec.id); };
   const idSpan = document.createElement('span');
   idSpan.className = 'id-text';
@@ -203,12 +210,12 @@ function appendIdCell(cell, rec) {
   actions.className = 'row-actions';
   const w = document.createElement('button');
   w.type = 'button';
-  w.textContent = 'W';
+  w.textContent = '白';
   w.title = '切换白名单';
   w.onclick = (ev) => { ev.stopPropagation(); toggleWhitelist(rec); };
   const b = document.createElement('button');
   b.type = 'button';
-  b.textContent = 'B';
+  b.textContent = '隐';
   b.title = '隐藏到本地黑名单';
   b.onclick = (ev) => { ev.stopPropagation(); hideRecord(rec); };
   actions.appendChild(w);
@@ -279,20 +286,20 @@ function toggleWhitelist(rec) {
   const key = channelIdKey(rec.ch, rec.id);
   if (whitelist.has(key)) whitelist.delete(key);
   else whitelist.add(key);
-  p3Status.textContent = `whitelist=${whitelist.size}`;
+  p3Status.textContent = `白名单=${whitelist.size}`;
   repaintAll();
 }
 
 function hideRecord(rec) {
   hidden.add(channelIdKey(rec.ch, rec.id));
-  p3Status.textContent = `hidden=${hidden.size}`;
+  p3Status.textContent = `已隐藏=${hidden.size}`;
   repaintAll();
 }
 
 function sendCmd(obj) {
   if (!ws || ws.readyState !== WebSocket.OPEN) {
     p3Status.textContent = 'WS 未连接，命令未发送';
-    if (String(obj.cmd || '').startsWith('p4_')) statusSignal('WS 未连接，P4 命令未发送');
+    if (String(obj.cmd || '').startsWith('p4_')) statusSignal('WS 未连接，信号命令未发送');
     return false;
   }
   ws.send(JSON.stringify(obj));
@@ -312,7 +319,7 @@ function selectSignalTarget(ch, id) {
   signalHints = [];
   if (previous) sendSignalWatch(previous, false);
   sendSignalWatch(signalTarget, true);
-  statusSignal(`watch ${channelName(ch)} ${idText(id)}`);
+  statusSignal(`正在观察 ${channelName(ch)} ${idText(id)}`);
   renderSignalWorkbench();
 }
 
@@ -381,7 +388,7 @@ function fillSignalForm(spec) {
 function saveFormSpec() {
   const spec = currentFormSpec();
   if (!spec) {
-    statusSignal('spec 无效：需要 target、label、有效 bit 范围和数值 scale/offset');
+    statusSignal('规格无效：需要目标、信号名、有效位范围，以及数值比例/偏移');
     return;
   }
   const idx = signalSpecs.findIndex(item => item.ch === spec.ch && item.id === spec.id && item.label === spec.label);
@@ -432,7 +439,7 @@ function decodeSignalSample(sample, spec) {
 }
 
 function formatValue(value) {
-  if (!Number.isFinite(value)) return 'n/a';
+  if (!Number.isFinite(value)) return '无';
   if (Math.abs(value) >= 1000 || Math.abs(value) < 0.01) return value.toExponential(3);
   return value.toFixed(3).replace(/\.0+$/, '').replace(/(\.\d*?)0+$/, '$1');
 }
@@ -440,7 +447,7 @@ function formatValue(value) {
 function sparklineSvg(values, display) {
   const w = 260;
   const h = 68;
-  if (values.length < 2) return `<svg class="sparkline" viewBox="0 0 ${w} ${h}"><text x="8" y="38">need >=2 samples</text></svg>`;
+  if (values.length < 2) return `<svg class="sparkline" viewBox="0 0 ${w} ${h}"><text x="8" y="38">至少需要 2 个样本</text></svg>`;
   const min = Math.min(...values);
   const max = Math.max(...values);
   const span = max === min ? 1 : max - min;
@@ -467,18 +474,18 @@ function renderSignalSpecs() {
   const specs = specsForTarget();
   signalSpecsEl.classList.toggle('empty', specs.length === 0);
   if (!signalTarget) {
-    signalSpecsEl.textContent = '未选中 target';
+    signalSpecsEl.textContent = '未选中目标';
     return;
   }
   if (specs.length === 0) {
-    signalSpecsEl.textContent = '当前 target 无浏览器工作集 spec';
+    signalSpecsEl.textContent = '当前目标没有浏览器工作集规格';
     return;
   }
   for (const spec of specs) {
     const item = document.createElement('div');
     item.className = 'signal-item';
     const meta = document.createElement('div');
-    meta.textContent = `${spec.label} · ${spec.endian}${spec.signed ? ' signed' : ''} · bit ${spec.start_bit}+${spec.bit_length} · x${spec.scale} + ${spec.offset} · ${spec.display}`;
+    meta.textContent = `${spec.label} · ${endianLabel(spec.endian)}${spec.signed ? ' · 有符号' : ' · 无符号'} · 位 ${spec.start_bit}+${spec.bit_length} · 比例×${spec.scale} · 偏移 ${spec.offset} · ${displayLabel(spec.display)}`;
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.textContent = '编辑';
@@ -494,15 +501,15 @@ function renderSignalDecode() {
   const specs = specsForTarget();
   signalDecodeEl.classList.toggle('empty', !signalTarget || specs.length === 0 || signalSamples.length === 0);
   if (!signalTarget) {
-    signalDecodeEl.textContent = '未选中 target';
+    signalDecodeEl.textContent = '未选中目标';
     return;
   }
   if (signalSamples.length === 0) {
-    signalDecodeEl.textContent = '等待 signal samples（可点击“请求 hints”获取最近样本）';
+    signalDecodeEl.textContent = '等待信号样本（可点击“请求候选”获取最近样本）';
     return;
   }
   if (specs.length === 0) {
-    signalDecodeEl.textContent = '当前 target 无 spec，保存手动信号后即时解码';
+    signalDecodeEl.textContent = '当前目标没有信号规格，保存手动信号后即可即时解码';
     return;
   }
   for (const spec of specs) {
@@ -513,41 +520,41 @@ function renderSignalDecode() {
     const max = values.length ? Math.max(...values) : NaN;
     const item = document.createElement('div');
     item.className = 'signal-item signal-decode-item';
-    item.innerHTML = `<div><strong>${spec.label}</strong> current=${formatValue(spec.display === 'raw' ? Number(current.rawText) : current.value)} raw=${current.rawText} min=${formatValue(min)} max=${formatValue(max)} samples=${signalSamples.length}</div>${sparklineSvg(values, spec.display)}`;
+    item.innerHTML = `<div><strong>${spec.label}</strong> 当前=${formatValue(spec.display === 'raw' ? Number(current.rawText) : current.value)} 原始=${current.rawText} 最小=${formatValue(min)} 最大=${formatValue(max)} 样本=${signalSamples.length}</div>${sparklineSvg(values, spec.display)}`;
     signalDecodeEl.appendChild(item);
   }
 }
 
 function hintKindText(kind) {
-  if (kind === 1) return 'mux';
-  if (kind === 2) return 'counter';
-  if (kind === 3) return 'checksum';
-  return `kind ${kind}`;
+  if (kind === 1) return '多路复用字段';
+  if (kind === 2) return '滚动计数器';
+  if (kind === 3) return '校验候选';
+  return `类型 ${kind}`;
 }
 
 function renderSignalHints() {
   clearNode(signalHintsEl);
   signalHintsEl.classList.toggle('empty', signalHints.length === 0);
   if (!signalTarget) {
-    signalHintsEl.textContent = '未选中 target';
+    signalHintsEl.textContent = '未选中目标';
     return;
   }
   if (signalHints.length === 0) {
-    signalHintsEl.textContent = '暂无 hints';
+    signalHintsEl.textContent = '暂无候选提示';
     return;
   }
   for (const hint of signalHints) {
     const item = document.createElement('div');
     item.className = 'signal-item';
     const text = document.createElement('div');
-    text.textContent = `${hintKindText(hint.kind)} · bit ${hint.start_bit}+${hint.bit_length} · confidence=${hint.confidence.toFixed(3)} · evidence=${hint.evidence || '-'}`;
+    text.textContent = `${hintKindText(hint.kind)} · 位 ${hint.start_bit}+${hint.bit_length} · 置信度=${hint.confidence.toFixed(3)} · 依据=${hint.evidence || '-'}`;
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.textContent = '带入表单';
     btn.onclick = () => {
       sigStartBit.value = hint.start_bit;
       sigBitLength.value = hint.bit_length;
-      statusSignal('hint 已带入表单，未自动保存');
+      statusSignal('候选已带入表单，尚未自动保存');
     };
     item.appendChild(text);
     item.appendChild(btn);
@@ -556,8 +563,8 @@ function renderSignalHints() {
 }
 
 function renderSignalWorkbench() {
-  if (signalTarget) signalTargetEl.textContent = `当前 target: ${channelName(signalTarget.ch)} ${idText(signalTarget.id)}`;
-  else signalTargetEl.textContent = '未选中 target：点击实时表行或 P3 结果 ID 单元选择 (channel,id)';
+  if (signalTarget) signalTargetEl.textContent = `当前目标：${channelName(signalTarget.ch)} ${idText(signalTarget.id)}`;
+  else signalTargetEl.textContent = '未选中目标：点击实时表行或 P3 结果 ID 单元选择（通道,ID）';
   signalHintsBtn.disabled = !signalTarget;
   sigSaveBtn.disabled = !signalTarget;
   renderSignalSpecs();
@@ -623,20 +630,20 @@ function exportSignalSpecs() {
 
 function importSignalDoc(doc) {
   if (!doc || doc.version !== 1 || !Array.isArray(doc.signals)) {
-    statusSignal('导入失败：需要 {version:1, signals:[...]}');
+    statusSignal('导入失败：JSON 需要包含 {version:1, signals:[...]}');
     return false;
   }
   const next = [];
   for (const item of doc.signals) {
     const spec = normalizeSignalSpec(item, null);
     if (!spec) {
-      statusSignal('导入失败：signals 中存在非法 spec，整份已拒绝');
+      statusSignal('导入失败：signals 中存在非法规格，整份已拒绝');
       return false;
     }
     next.push(spec);
   }
   signalSpecs = next;
-  statusSignal(`已导入 ${signalSpecs.length} 条 spec（替换当前浏览器工作集）`);
+  statusSignal(`已导入 ${signalSpecs.length} 条规格（替换当前浏览器工作集）`);
   renderSignalWorkbench();
   return true;
 }
@@ -688,7 +695,7 @@ async function saveCommonSignals() {
 async function editLabel(rec) {
   const key = channelIdKey(rec.ch, rec.id);
   const current = labels.get(key) || '';
-  const next = prompt(`${channelName(rec.ch)} ${idText(rec.id)} label`, current);
+  const next = prompt(`${channelName(rec.ch)} ${idText(rec.id)} 标注`, current);
   if (next === null) return;
   const text = next.trim();
   if (text) labels.set(key, text);
@@ -736,14 +743,20 @@ function parseStats(buf) {
   const loadB = dv.getUint16(o, true) / 10; o += 2;
   o += 4 + 4 + 1 + 1;
   const dropped = dv.getUint32(o, true);
-  busStats.textContent = `A: ${fpsA}fps ${loadA.toFixed(1)}% · B: ${fpsB}fps ${loadB.toFixed(1)}% · dropped=${dropped}`;
+  busStats.textContent = `A: ${fpsA} 帧/秒 ${loadA.toFixed(1)}% · B: ${fpsB} 帧/秒 ${loadB.toFixed(1)}% · 丢弃=${dropped}`;
 }
 
-function diffKindText(kind) {
+function diffKindKey(kind) {
   if (kind === 1) return 'added';
   if (kind === 2) return 'removed';
   if (kind === 3) return 'changed';
-  return `kind ${kind}`;
+  return 'unknown';
+}
+function diffKindText(kind) {
+  if (kind === 1) return '新增';
+  if (kind === 2) return '消失';
+  if (kind === 3) return '变化';
+  return `类型 ${kind}`;
 }
 
 function appendCell(tr, value, cls) {
@@ -756,7 +769,7 @@ function appendCell(tr, value, cls) {
 function appendIdWithLabel(tr, ch, id) {
   const td = document.createElement('td');
   td.className = 'selectable-id';
-  td.title = '选择 Signal Workbench target';
+  td.title = '选择信号工作台目标';
   td.onclick = (ev) => { ev.stopPropagation(); selectSignalTarget(ch, id); };
   td.appendChild(textNode(idText(id)));
   const label = labels.get(channelIdKey(ch, id));
@@ -775,19 +788,20 @@ function renderSnapshotDiffRows() {
   const totals = { added: 0, removed: 0, changed: 0 };
   for (const row of snapshotDiffRows) {
     if (!passesP3Filter(row)) continue;
+    const key = diffKindKey(row.kind);
     const text = diffKindText(row.kind);
-    if (totals[text] !== undefined) totals[text]++;
+    if (totals[key] !== undefined) totals[key]++;
     const tr = document.createElement('tr');
     appendCell(tr, channelName(row.ch));
     appendIdWithLabel(tr, row.ch, row.id);
-    appendCell(tr, text, `kind-${text}`);
+    appendCell(tr, text, `kind-${key}`);
     appendCell(tr, row.dlcA);
     appendCell(tr, dataText(row.dataA, row.dlcA));
     appendCell(tr, row.dlcB);
     appendCell(tr, dataText(row.dataB, row.dlcB));
     snapshotBody.appendChild(tr);
   }
-  snapshotSummary.textContent = `added=${totals.added} removed=${totals.removed} changed=${totals.changed}`;
+  snapshotSummary.textContent = `新增=${totals.added} 消失=${totals.removed} 变化=${totals.changed}`;
 }
 
 function renderPretriggerRows() {
@@ -812,7 +826,7 @@ function renderPretriggerRows() {
     appendCell(tr, dataText(row.data, row.dlc));
     pretriggerBody.appendChild(tr);
   }
-  pretriggerSummary.textContent = `records=${shown} frames=${totalFrames} changes=${totalChanges}`;
+  pretriggerSummary.textContent = `记录=${shown} 帧数=${totalFrames} 变化=${totalChanges}`;
 }
 
 function clearSnapshotResults() {
@@ -870,7 +884,7 @@ function parseBaseline(buf, dv, count) {
     if (!hidden.has(key)) added++;
     hidden.add(key);
   }
-  p3Status.textContent = `baseline hidden +${added}, total=${hidden.size}`;
+  p3Status.textContent = `基线隐藏 +${added}，总计=${hidden.size}`;
   repaintAll();
 }
 
@@ -889,10 +903,10 @@ function connect() {
   ws = new WebSocket('ws://' + location.host + '/ws');
   ws.binaryType = 'arraybuffer';
   ws.onopen = () => {
-    statusEl.textContent = 'WS: 已连接';
+    statusEl.textContent = 'WS：已连接';
     if (signalTarget) sendSignalWatch(signalTarget, true);
   };
-  ws.onclose = () => { statusEl.textContent = 'WS: 断开，重连中…'; setTimeout(connect, 1000); };
+  ws.onclose = () => { statusEl.textContent = 'WS：断开，重连中…'; setTimeout(connect, 1000); };
   ws.onmessage = (ev) => {
     if (!(ev.data instanceof ArrayBuffer) || ev.data.byteLength === 0) return;
     const type = new DataView(ev.data).getUint8(0);
@@ -906,7 +920,7 @@ function connect() {
 function paintTxState() {
   const anyTx = txState.master && ((txState.a && txState.onlineA) || (txState.b && txState.onlineB));
   banner.className = 'banner ' + (anyTx ? 'tx' : 'listen');
-  banner.textContent = anyTx ? '可发送（至少一个通道 TX 开启）' : '监听-only（TX 关闭）';
+  banner.textContent = anyTx ? '可发送（至少一个通道 TX 开启）' : '只监听模式（TX 关闭）';
   masterToggle.classList.toggle('on', txState.master);
   txAToggle.classList.toggle('on', txState.a);
   txBToggle.classList.toggle('on', txState.b);
@@ -938,9 +952,9 @@ function paintRecordStatus(s) {
   recordStartBtn.disabled = recording;
   recordStopBtn.disabled = !recording;
   if (recording) {
-    recordStatusEl.textContent = `录制中 · ${count} 帧 · dropped=${dropped}`;
+    recordStatusEl.textContent = `录制中 · ${count} 帧 · 丢弃=${dropped}`;
   } else if (count > 0) {
-    recordStatusEl.textContent = `空闲 · ${count} 帧可下载 · dropped=${dropped}`;
+    recordStatusEl.textContent = `空闲 · ${count} 帧可下载 · 丢弃=${dropped}`;
   } else {
     recordStatusEl.textContent = '录制：空闲';
   }
@@ -961,7 +975,7 @@ async function loadLabels() {
     }
     repaintAll();
   } catch (e) {
-    p3Status.textContent = 'labels load failed';
+    p3Status.textContent = '标注加载失败';
   }
 }
 
@@ -988,7 +1002,7 @@ recordDownload.addEventListener('click', (e) => {
   if (recordDownload.classList.contains('disabled')) e.preventDefault();
 });
 baselineBtn.onclick = () => {
-  p3Status.textContent = 'baseline requested';
+  p3Status.textContent = '已请求设置基线';
   sendCmd({ cmd: 'baseline' });
 };
 snapABtn.onclick = () => sendCmd({ cmd: 'snapshot', slot: 'A' });
@@ -1005,7 +1019,7 @@ signalHintsBtn.onclick = () => {
   if (!signalTarget) return;
   signalSamples = [];
   signalHints = [];
-  statusSignal(`请求 hints ${channelName(signalTarget.ch)} ${idText(signalTarget.id)}`);
+  statusSignal(`请求候选 ${channelName(signalTarget.ch)} ${idText(signalTarget.id)}`);
   renderSignalWorkbench();
   sendCmd({ cmd: 'p4_hints', ch: channelName(signalTarget.ch), id: signalTarget.id });
 };

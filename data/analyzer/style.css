@@ -13,6 +13,12 @@ input[type="number"] { width: 56px; }
 #search-box { width: 130px; }
 #bus-health, #bus-stats, #p3-status { color: #aaa; }
 #status { padding: 6px 10px; color: #888; }
+.intro-panel { margin: 8px; padding: 10px; border: 1px solid #333; background: #151515; }
+.intro-panel h1 { margin: 0 0 8px; font-size: 20px; }
+.intro-grid { display: grid; grid-template-columns: repeat(4, minmax(160px, 1fr)); gap: 8px; }
+.intro-grid div { border: 1px solid #2a2a2a; background: #101010; padding: 8px; }
+.intro-grid strong { display: block; margin-bottom: 4px; color: #fff; }
+.intro-grid span { color: #aaa; line-height: 1.45; }
 .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 8px; }
 table { width: 100%; border-collapse: collapse; font-size: 12px; }
 th, td { border: 1px solid #333; padding: 2px 5px; text-align: left; }
@@ -61,7 +67,7 @@ tr.baselined { opacity: 0.45; }
 .sparkline polyline { fill: none; stroke: #60a5fa; stroke-width: 2; }
 .sparkline text { fill: #777; font-size: 12px; }
 @media (max-width: 900px) {
-  .grid, .workbench-grid { grid-template-columns: 1fr; }
+  .grid, .workbench-grid, .intro-grid { grid-template-columns: 1fr; }
   .signal-form { grid-template-columns: repeat(2, minmax(110px, 1fr)); }
 }
 .record-controls { align-items: center; }
