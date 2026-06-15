@@ -891,7 +891,8 @@ void analyzerWebBegin()
         AsyncWebServerResponse *response = request->beginChunkedResponse(
             "text/csv",
             [cursor, total](uint8_t *buffer, size_t maxLen, size_t) -> size_t {
-                if (!g_recorder)
+                // 录制若在下载中途重新开始，立即截断，避免与 drain push 并发读撕裂帧。
+                if (!g_recorder || g_recorder->active())
                     return 0;
                 return recordCsvFill(reinterpret_cast<char *>(buffer), maxLen, *g_recorder, total, *cursor);
             });
