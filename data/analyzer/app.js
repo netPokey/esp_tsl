@@ -953,6 +953,7 @@ function wifiModeText(mode) {
 async function refreshWifiStatus() {
   try {
     const r = await fetch('/api/wifi');
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const s = await r.json();
     wifiMode.value = wifiModeText(s.mode);
     wifiIp.value = s.ip || '';
@@ -973,6 +974,7 @@ async function connectWifi() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ssid: wifiSsid.value.trim(), pass: wifiPass.value })
     });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const s = await r.json();
     wifiStatus.textContent = s.pending
       ? 'WiFi 配置已保存，设备正在切换网络；请稍后刷新状态，或打开新 IP / AP 地址。'
@@ -984,12 +986,15 @@ async function connectWifi() {
   }
 }
 
-async function postDeviceAction(path, message) {
+async function postDeviceAction(path, message, button) {
+  if (button) button.disabled = true;
   try {
-    await fetch(path, { method: 'POST' });
+    const r = await fetch(path, { method: 'POST' });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
     wifiStatus.textContent = message;
   } catch (e) {
     wifiStatus.textContent = `操作请求失败：${e.message || e}`;
+    if (button) button.disabled = false;
   }
 }
 
@@ -1060,11 +1065,11 @@ wifiConnectBtn.onclick = connectWifi;
 wifiRefreshBtn.onclick = refreshWifiStatus;
 deviceRestartBtn.onclick = () => {
   if (confirm('确定要重启设备吗？网页会短暂断开。'))
-    postDeviceAction('/api/restart', '设备正在重启…');
+    postDeviceAction('/api/restart', '设备正在重启…', deviceRestartBtn);
 };
 deviceShutdownBtn.onclick = () => {
   if (confirm('确定要关机（进入深度睡眠）吗？需要按复位或重新上电恢复。'))
-    postDeviceAction('/api/shutdown', '设备正在进入深度睡眠…');
+    postDeviceAction('/api/shutdown', '设备正在进入深度睡眠…', deviceShutdownBtn);
 };
 recordStartBtn.onclick = () => {
   if (sendCmd({ cmd: 'record_start' })) setTimeout(refreshTxBanner, 100);
