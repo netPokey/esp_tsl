@@ -22,6 +22,10 @@ const rangeTo = document.getElementById('range-to');
 const searchBox = document.getElementById('search-box');
 const whitelistOnly = document.getElementById('whitelist-only');
 const p3Status = document.getElementById('p3-status');
+const recordStartBtn = document.getElementById('record-start-btn');
+const recordStopBtn = document.getElementById('record-stop-btn');
+const recordDownload = document.getElementById('record-download');
+const recordStatusEl = document.getElementById('record-status');
 const snapshotSummary = document.getElementById('snapshot-summary');
 const pretriggerSummary = document.getElementById('pretrigger-summary');
 const snapshotBody = document.querySelector('#snapshot-diff tbody');
@@ -923,7 +927,25 @@ async function refreshTxBanner() {
       onlineB: !!s.can_b_online,
     };
     paintTxState();
+    paintRecordStatus(s);
   } catch (e) {}
+}
+
+function paintRecordStatus(s) {
+  const recording = !!s.recording;
+  const count = Number(s.record_count || 0);
+  const dropped = Number(s.record_dropped || 0);
+  recordStartBtn.disabled = recording;
+  recordStopBtn.disabled = !recording;
+  if (recording) {
+    recordStatusEl.textContent = `录制中 · ${count} 帧 · dropped=${dropped}`;
+  } else if (count > 0) {
+    recordStatusEl.textContent = `空闲 · ${count} 帧可下载 · dropped=${dropped}`;
+  } else {
+    recordStatusEl.textContent = '录制：空闲';
+  }
+  const canDownload = !recording && count > 0;
+  recordDownload.classList.toggle('disabled', !canDownload);
 }
 
 async function loadLabels() {
@@ -956,6 +978,15 @@ txBToggle.onclick = async () => {
   refreshTxBanner();
 };
 banner.onclick = masterToggle.onclick;
+recordStartBtn.onclick = () => {
+  if (sendCmd({ cmd: 'record_start' })) setTimeout(refreshTxBanner, 100);
+};
+recordStopBtn.onclick = () => {
+  if (sendCmd({ cmd: 'record_stop' })) setTimeout(refreshTxBanner, 100);
+};
+recordDownload.addEventListener('click', (e) => {
+  if (recordDownload.classList.contains('disabled')) e.preventDefault();
+});
 baselineBtn.onclick = () => {
   p3Status.textContent = 'baseline requested';
   sendCmd({ cmd: 'baseline' });

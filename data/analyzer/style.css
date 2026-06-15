@@ -64,3 +64,16 @@ tr.baselined { opacity: 0.45; }
   .grid, .workbench-grid { grid-template-columns: 1fr; }
   .signal-form { grid-template-columns: repeat(2, minmax(110px, 1fr)); }
 }
+.record-controls { align-items: center; }
+.record-link {
+  padding: 4px 10px;
+  border: 1px solid #4a4a4a;
+  border-radius: 4px;
+  text-decoration: none;
+  color: #ddd;
+}
+.record-link.disabled {
+  opacity: 0.45;
+  pointer-events: none;
+  cursor: default;
+}
