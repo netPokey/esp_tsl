@@ -520,7 +520,13 @@ function renderSignalDecode() {
     const max = values.length ? Math.max(...values) : NaN;
     const item = document.createElement('div');
     item.className = 'signal-item signal-decode-item';
-    item.innerHTML = `<div><strong>${spec.label}</strong> 当前=${formatValue(spec.display === 'raw' ? Number(current.rawText) : current.value)} 原始=${current.rawText} 最小=${formatValue(min)} 最大=${formatValue(max)} 样本=${signalSamples.length}</div>${sparklineSvg(values, spec.display)}`;
+    const line = document.createElement('div');
+    const name = document.createElement('strong');
+    name.textContent = spec.label;
+    line.appendChild(name);
+    line.appendChild(textNode(` 当前=${formatValue(spec.display === 'raw' ? Number(current.rawText) : current.value)} 原始=${current.rawText} 最小=${formatValue(min)} 最大=${formatValue(max)} 样本=${signalSamples.length}`));
+    item.appendChild(line);
+    item.insertAdjacentHTML('beforeend', sparklineSvg(values, spec.display));
     signalDecodeEl.appendChild(item);
   }
 }
@@ -564,7 +570,7 @@ function renderSignalHints() {
 
 function renderSignalWorkbench() {
   if (signalTarget) signalTargetEl.textContent = `当前目标：${channelName(signalTarget.ch)} ${idText(signalTarget.id)}`;
-  else signalTargetEl.textContent = '未选中目标：点击实时表行或 P3 结果 ID 单元选择（通道,ID）';
+  else signalTargetEl.textContent = '未选中目标：点击实时表行或 快照/回看结果 ID 单元选择（通道,ID）';
   signalHintsBtn.disabled = !signalTarget;
   sigSaveBtn.disabled = !signalTarget;
   renderSignalSpecs();

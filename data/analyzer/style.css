@@ -20,7 +20,8 @@ input[type="number"] { width: 56px; }
 .intro-grid strong { display: block; margin-bottom: 4px; color: #fff; }
 .intro-grid span { color: #aaa; line-height: 1.45; }
 .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 8px; }
-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+section { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 12px; min-width: 720px; }
 th, td { border: 1px solid #333; padding: 2px 5px; text-align: left; }
 h2 { margin: 4px 0; }
 tr.activity-low { background: #131d13; }

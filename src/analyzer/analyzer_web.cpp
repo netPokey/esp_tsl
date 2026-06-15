@@ -874,7 +874,7 @@ void analyzerWebBegin()
               });
 
     server.on("/api/record/download", HTTP_GET, [](AsyncWebServerRequest *request) {
-        if (!g_recorder || g_recorder->count() == 0)
+        if (!g_recorder)
         {
             request->send(404, "text/plain", "no recording");
             return;
@@ -884,6 +884,11 @@ void analyzerWebBegin()
         if (g_recorder->active())
         {
             request->send(409, "text/plain", "stop recording first");
+            return;
+        }
+        if (g_recorder->count() == 0)
+        {
+            request->send(404, "text/plain", "no recording");
             return;
         }
         auto cursor = std::make_shared<RecordCsvCursor>();
