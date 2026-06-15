@@ -26,6 +26,15 @@ const recordStartBtn = document.getElementById('record-start-btn');
 const recordStopBtn = document.getElementById('record-stop-btn');
 const recordDownload = document.getElementById('record-download');
 const recordStatusEl = document.getElementById('record-status');
+const wifiMode = document.getElementById('wifi-mode');
+const wifiIp = document.getElementById('wifi-ip');
+const wifiSsid = document.getElementById('wifi-ssid');
+const wifiPass = document.getElementById('wifi-pass');
+const wifiConnectBtn = document.getElementById('wifi-connect-btn');
+const wifiRefreshBtn = document.getElementById('wifi-refresh-btn');
+const deviceRestartBtn = document.getElementById('device-restart-btn');
+const deviceShutdownBtn = document.getElementById('device-shutdown-btn');
+const wifiStatus = document.getElementById('wifi-status');
 const snapshotSummary = document.getElementById('snapshot-summary');
 const pretriggerSummary = document.getElementById('pretrigger-summary');
 const snapshotBody = document.querySelector('#snapshot-diff tbody');
@@ -935,6 +944,55 @@ function paintTxState() {
   busHealth.textContent = `CAN_A: ${txState.onlineA ? '在线' : '离线'} · CAN_B: ${txState.onlineB ? '在线' : '离线'}`;
 }
 
+function wifiModeText(mode) {
+  if (mode === 'sta') return '已连接路由器（STA）';
+  if (mode === 'ap') return '热点模式（AP）';
+  return '无线已关闭';
+}
+
+async function refreshWifiStatus() {
+  try {
+    const r = await fetch('/api/wifi');
+    const s = await r.json();
+    wifiMode.value = wifiModeText(s.mode);
+    wifiIp.value = s.ip || '';
+    wifiSsid.value = s.ssid || '';
+    wifiPass.value = s.pass || '';
+    wifiStatus.textContent = `网络状态：${wifiModeText(s.mode)} ${s.ip || ''}`;
+  } catch (e) {
+    wifiStatus.textContent = `网络状态获取失败：${e.message || e}`;
+  }
+}
+
+async function connectWifi() {
+  wifiConnectBtn.disabled = true;
+  wifiStatus.textContent = '正在连接 WiFi…';
+  try {
+    const r = await fetch('/api/wifi', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ssid: wifiSsid.value.trim(), pass: wifiPass.value })
+    });
+    const s = await r.json();
+    wifiStatus.textContent = s.pending
+      ? 'WiFi 配置已保存，设备正在切换网络；请稍后刷新状态，或打开新 IP / AP 地址。'
+      : `连接请求已返回：${JSON.stringify(s)}`;
+  } catch (e) {
+    wifiStatus.textContent = `连接请求失败：${e.message || e}`;
+  } finally {
+    wifiConnectBtn.disabled = false;
+  }
+}
+
+async function postDeviceAction(path, message) {
+  try {
+    await fetch(path, { method: 'POST' });
+    wifiStatus.textContent = message;
+  } catch (e) {
+    wifiStatus.textContent = `操作请求失败：${e.message || e}`;
+  }
+}
+
 async function refreshTxBanner() {
   try {
     const r = await fetch('/api/status');
@@ -998,6 +1056,16 @@ txBToggle.onclick = async () => {
   refreshTxBanner();
 };
 banner.onclick = masterToggle.onclick;
+wifiConnectBtn.onclick = connectWifi;
+wifiRefreshBtn.onclick = refreshWifiStatus;
+deviceRestartBtn.onclick = () => {
+  if (confirm('确定要重启设备吗？网页会短暂断开。'))
+    postDeviceAction('/api/restart', '设备正在重启…');
+};
+deviceShutdownBtn.onclick = () => {
+  if (confirm('确定要关机（进入深度睡眠）吗？需要按复位或重新上电恢复。'))
+    postDeviceAction('/api/shutdown', '设备正在进入深度睡眠…');
+};
 recordStartBtn.onclick = () => {
   if (sendCmd({ cmd: 'record_start' })) setTimeout(refreshTxBanner, 100);
 };
@@ -1056,6 +1124,7 @@ for (const el of [channelFilter, idFilter, rangeFrom, rangeTo, searchBox, whitel
 renderSignalWorkbench();
 connect();
 loadLabels();
+refreshWifiStatus();
 refreshTxBanner();
 setInterval(refreshTxBanner, 2000);
 setInterval(() => { if (!freezeView.checked) repaintAll(); }, 500);

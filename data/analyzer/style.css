@@ -40,6 +40,12 @@ tr.activity-high { background: #331414; }
 tr.whitelisted { outline: 1px solid #22c55e; outline-offset: -1px; }
 tr.baselined { opacity: 0.45; }
 .panel-summary { color: #aaa; margin: 2px 0 6px; }
+.network-panel { margin: 8px; padding: 10px; border: 1px solid #333; background: #151515; }
+.network-panel h2 { margin: 0 0 6px; }
+.network-grid { display: grid; grid-template-columns: repeat(4, minmax(150px, 1fr)); gap: 8px; align-items: end; }
+.network-grid label { display: flex; flex-direction: column; gap: 3px; color: #aaa; }
+.network-grid input { width: 100%; }
+#wifi-status { color: #aaa; grid-column: span 4; }
 .p3-results td:nth-child(5), .p3-results td:nth-child(7) { white-space: nowrap; }
 .kind-added { color: #86efac; }
 .kind-removed { color: #fca5a5; }
@@ -68,8 +74,9 @@ tr.baselined { opacity: 0.45; }
 .sparkline polyline { fill: none; stroke: #60a5fa; stroke-width: 2; }
 .sparkline text { fill: #777; font-size: 12px; }
 @media (max-width: 900px) {
-  .grid, .workbench-grid, .intro-grid { grid-template-columns: 1fr; }
+  .grid, .workbench-grid, .intro-grid, .network-grid { grid-template-columns: 1fr; }
   .signal-form { grid-template-columns: repeat(2, minmax(110px, 1fr)); }
+  #wifi-status { grid-column: span 1; }
 }
 .record-controls { align-items: center; }
 .record-link {

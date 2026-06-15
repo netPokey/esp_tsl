@@ -23,6 +23,21 @@
       <div><strong>对比与信号</strong><span>快照差异用于找操作前后变化 ID，信号工作台用于按位解析候选信号。</span></div>
     </div>
   </section>
+  <section class="network-panel">
+    <h2>网络与电源</h2>
+    <div class="panel-summary">配置 WiFi 后设备会优先连接路由器；连接失败会自动回到 AP：CAN-Analyzer / analyzer1234。关机为深度睡眠，需要按复位或重新上电恢复。</div>
+    <div class="network-grid">
+      <label>当前模式 <input id="wifi-mode" type="text" readonly/></label>
+      <label>当前 IP <input id="wifi-ip" type="text" readonly/></label>
+      <label>WiFi 名称 <input id="wifi-ssid" type="text" placeholder="输入 SSID"/></label>
+      <label>WiFi 密码 <input id="wifi-pass" type="text" placeholder="输入密码"/></label>
+      <button id="wifi-connect-btn">连接 WiFi</button>
+      <button id="wifi-refresh-btn">刷新状态</button>
+      <button id="device-restart-btn">重启设备</button>
+      <button id="device-shutdown-btn">关机（深度睡眠）</button>
+      <span id="wifi-status">网络状态：未知</span>
+    </div>
+  </section>
   <div class="controls p3-controls">
     <button id="baseline-btn">设为基线</button>
     <button id="snapshot-a-btn">快照 A</button>
