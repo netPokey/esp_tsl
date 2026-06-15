@@ -84,6 +84,22 @@ void test_collect_with_skip_paging()
     TEST_ASSERT_EQUAL_UINT(4, out[1].id);
 }
 
+void test_collect_with_skip_after_wrap()
+{
+    // 满缓冲后 head 折返（oldest=head_!=0），验证 skip 跨模取数顺序正确
+    CapturedFrame storage[3];
+    Recorder r;
+    r.init(storage, 3);
+    r.start();
+    for (uint32_t i = 1; i <= 5; ++i)   // 保留旧->新 {3,4,5}，head_=2
+        r.push(frameWithId(i));
+    CapturedFrame out[3];
+    size_t n = r.collect(out, 2, 1);    // 跳过 3，取 {4,5}
+    TEST_ASSERT_EQUAL_UINT(2, n);
+    TEST_ASSERT_EQUAL_UINT(4, out[0].id);
+    TEST_ASSERT_EQUAL_UINT(5, out[1].id);
+}
+
 void test_collect_skip_beyond_count_returns_zero()
 {
     CapturedFrame storage[4];
@@ -128,6 +144,7 @@ int main(int, char **)
     RUN_TEST(test_ring_overwrites_oldest_and_counts_dropped);
     RUN_TEST(test_collect_old_to_new_when_not_full);
     RUN_TEST(test_collect_with_skip_paging);
+    RUN_TEST(test_collect_with_skip_after_wrap);
     RUN_TEST(test_collect_skip_beyond_count_returns_zero);
     RUN_TEST(test_stop_keeps_content);
     RUN_TEST(test_uninitialized_is_safe);
