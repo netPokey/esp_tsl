@@ -6,6 +6,7 @@
 #include "analyzer/common_signal_store.h"
 #include "analyzer/label_store.h"
 #include "analyzer/pretrigger_buffer.h"
+#include "analyzer/recorder.h"
 #include "analyzer/signal_window.h"
 #include "analyzer/snapshot_store.h"
 
@@ -96,6 +97,7 @@ inline bool analyzerWebBodyChunkCompletesForTest(size_t index, size_t len, size_
 
 void analyzerWebSetContext(FrameQueue *queue, IdTable *table, BusStatsTracker *stats,
                            PretriggerBuffer *pretrigger, SnapshotStore *snapshots, LabelStore *labels,
-                           WatchedSignalWindow *signals, CommonSignalStore *common_signals);
+                           WatchedSignalWindow *signals, CommonSignalStore *common_signals,
+                           Recorder *recorder);
 void analyzerWebBegin();
 void analyzerWebLoop();

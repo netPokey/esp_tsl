@@ -1,5 +1,7 @@
 #include "analyzer/analyzer_web.h"
 #include "analyzer/analyzer_control.h"
+#include "analyzer/record_format.h"
+#include "analyzer/recorder.h"
 #include "analyzer/signal_hints.h"
 #include "analyzer/ws_protocol.h"
 #include "can_helpers.h"
@@ -11,6 +13,7 @@
 #include <cstring>
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
+#include <memory>
 
 namespace
 {
@@ -25,6 +28,7 @@ SnapshotStore *g_snapshots = nullptr;
 LabelStore *g_labels = nullptr;
 WatchedSignalWindow *g_signals = nullptr;
 CommonSignalStore *g_commonSignals = nullptr;
+Recorder *g_recorder = nullptr;
 
 constexpr uint32_t kDirtyKeys = static_cast<uint32_t>(kChannelCount) * kStdIdCount;
 uint8_t g_dirty[kDirtyKeys / 8] = {};
@@ -65,7 +69,9 @@ enum class PendingCmdType : uint8_t
     LabelSet,
     LabelDelete,
     P4Watch,
-    P4Hints
+    P4Hints,
+    RecordStart,
+    RecordStop
 };
 
 struct PendingCmd
@@ -475,6 +481,14 @@ void processPendingCommand(const PendingCmd &cmd)
         sendSignalSamples(cmd.channel, cmd.id);
         sendSignalHints(cmd.channel, cmd.id);
         break;
+    case PendingCmdType::RecordStart:
+        if (g_recorder)
+            g_recorder->start();
+        break;
+    case PendingCmdType::RecordStop:
+        if (g_recorder)
+            g_recorder->stop();
+        break;
     }
 }
 
@@ -583,6 +597,18 @@ void handleCommand(const char *text, size_t len)
         enqueuePendingCommand(pending);
         return;
     }
+    if (strcmp(cmd, "record_start") == 0)
+    {
+        pending.type = PendingCmdType::RecordStart;
+        enqueuePendingCommand(pending);
+        return;
+    }
+    if (strcmp(cmd, "record_stop") == 0)
+    {
+        pending.type = PendingCmdType::RecordStop;
+        enqueuePendingCommand(pending);
+        return;
+    }
 }
 
 void onWsEvent(AsyncWebSocket *, AsyncWebSocketClient *, AwsEventType type, void *arg, uint8_t *data, size_t len)
@@ -613,6 +639,8 @@ void drainQueueIntoTable()
             g_pretrigger->push(cap);
         if (g_signals)
             g_signals->push(cap);
+        if (g_recorder && g_recorder->active())
+            g_recorder->push(cap);
         g_table->update(cap);
         markDirty(cap.channel, cap.id);
     }
@@ -698,7 +726,8 @@ void pushBusStats()
 
 void analyzerWebSetContext(FrameQueue *queue, IdTable *table, BusStatsTracker *stats,
                            PretriggerBuffer *pretrigger, SnapshotStore *snapshots, LabelStore *labels,
-                           WatchedSignalWindow *signals, CommonSignalStore *common_signals)
+                           WatchedSignalWindow *signals, CommonSignalStore *common_signals,
+                           Recorder *recorder)
 {
     g_queue = queue;
     g_table = table;
@@ -708,6 +737,7 @@ void analyzerWebSetContext(FrameQueue *queue, IdTable *table, BusStatsTracker *s
     g_labels = labels;
     g_signals = signals;
     g_commonSignals = common_signals;
+    g_recorder = recorder;
 }
 
 void analyzerWebBegin()
@@ -723,6 +753,10 @@ void analyzerWebBegin()
         out += ",\"can_a_online\":" + String(isAnalyzerChannelOnline(0) ? "true" : "false");
         out += ",\"can_b_online\":" + String(isAnalyzerChannelOnline(1) ? "true" : "false");
         out += ",\"pending_dropped\":" + String(pendingDroppedCount());
+        out += ",\"recording\":" + String(g_recorder && g_recorder->active() ? "true" : "false");
+        out += ",\"record_count\":" + String(g_recorder ? static_cast<uint32_t>(g_recorder->count()) : 0);
+        out += ",\"record_capacity\":" + String(g_recorder ? static_cast<uint32_t>(g_recorder->capacity()) : 0);
+        out += ",\"record_dropped\":" + String(g_recorder ? g_recorder->dropped() : 0);
         out += "}";
         request->send(200, "application/json", out);
     });
@@ -838,6 +872,25 @@ void analyzerWebBegin()
 
                   request->send(200, "application/json", "{\"ok\":true}");
               });
+
+    server.on("/api/record/download", HTTP_GET, [](AsyncWebServerRequest *request) {
+        if (!g_recorder || g_recorder->count() == 0)
+        {
+            request->send(404, "text/plain", "no recording");
+            return;
+        }
+        auto cursor = std::make_shared<RecordCsvCursor>();
+        const size_t total = g_recorder->count();
+        AsyncWebServerResponse *response = request->beginChunkedResponse(
+            "text/csv",
+            [cursor, total](uint8_t *buffer, size_t maxLen, size_t) -> size_t {
+                if (!g_recorder)
+                    return 0;
+                return recordCsvFill(reinterpret_cast<char *>(buffer), maxLen, *g_recorder, total, *cursor);
+            });
+        response->addHeader("Content-Disposition", "attachment; filename=\"can-record.csv\"");
+        request->send(response);
+    });
 
     server.serveStatic("/", LittleFS, "/").setDefaultFile("index.html");
     server.begin();
