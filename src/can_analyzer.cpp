@@ -14,6 +14,7 @@
 #include "analyzer/label_store.h"
 #include "analyzer/pretrigger_buffer.h"
 #include "analyzer/recorder.h"
+#include "analyzer/replay_service.h"
 #include "analyzer/rx_task.h"
 #include "analyzer/signal_window.h"
 #include "analyzer/snapshot_store.h"
@@ -50,6 +51,8 @@ CommonSignalStore g_commonSignals;
 constexpr size_t kRecordCapacity = 100000;   // ~24B/帧 ≈ 2.4MB PSRAM
 CapturedFrame *g_recordStorage = nullptr;
 Recorder g_recorder;
+CapturedFrame *g_replayStorage = nullptr;
+ReplayService g_replayService;
 
 std::unique_ptr<MCP2515Driver> g_canA;
 std::unique_ptr<TWAIDriver> g_canB;
@@ -128,12 +131,20 @@ void setup()
     else
         Serial.println("PSRAM allocation failed for recorder");
 
+    g_replayStorage = static_cast<CapturedFrame *>(ps_malloc(sizeof(CapturedFrame) * kRecordCapacity));
+    if (!g_replayStorage)
+        Serial.println("PSRAM allocation failed for replay buffer");
+
     g_canA.reset(new MCP2515Driver(MCP2515_CS, MCP2515_RST,
                                    MCP2515_SCLK, MCP2515_MISO, MCP2515_MOSI,
                                    &SPI, 10000000));
     g_canB.reset(new TWAIDriver(static_cast<gpio_num_t>(CAN_TX),
                                 static_cast<gpio_num_t>(CAN_RX)));
     g_txService.init(g_canA.get(), g_canB.get());
+    g_replayService.init(g_recordStorage ? &g_recorder : nullptr,
+                         &g_txService,
+                         g_replayStorage,
+                         g_replayStorage ? kRecordCapacity : 0);
 
     const bool canAOk = g_canA->init();
     const bool canBOk = g_canB->init();
@@ -163,7 +174,8 @@ void setup()
                           (g_signalSlots && g_signalSamples) ? &g_signalWindow : nullptr,
                           &g_commonSignals,
                           g_recordStorage ? &g_recorder : nullptr,
-                          &g_txService);
+                          &g_txService,
+                          &g_replayService);
     analyzerWebBegin();
 
     Serial.print("CAN analyzer ready (listen-only): http://");

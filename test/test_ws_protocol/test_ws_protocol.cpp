@@ -581,6 +581,55 @@ void test_tx_body_owner_timeout_allows_new_request_to_reacquire()
     TEST_ASSERT_TRUE(analyzerWebTxBodyIsOwnerForTest(state, other));
 }
 
+void test_replay_target_parser_accepts_only_exact_tokens()
+{
+    ReplayTarget target = ReplayTarget::ForceB;
+    TEST_ASSERT_TRUE(analyzerWebParseReplayTargetForTest("original", target));
+    TEST_ASSERT_TRUE(target == ReplayTarget::Original);
+    TEST_ASSERT_TRUE(analyzerWebParseReplayTargetForTest("A", target));
+    TEST_ASSERT_TRUE(target == ReplayTarget::ForceA);
+    TEST_ASSERT_TRUE(analyzerWebParseReplayTargetForTest("B", target));
+    TEST_ASSERT_TRUE(target == ReplayTarget::ForceB);
+
+    target = ReplayTarget::ForceA;
+    TEST_ASSERT_FALSE(analyzerWebParseReplayTargetForTest(nullptr, target));
+    TEST_ASSERT_TRUE(target == ReplayTarget::ForceA);
+    TEST_ASSERT_FALSE(analyzerWebParseReplayTargetForTest("", target));
+    TEST_ASSERT_FALSE(analyzerWebParseReplayTargetForTest("Original", target));
+    TEST_ASSERT_FALSE(analyzerWebParseReplayTargetForTest("ORIGINAL", target));
+    TEST_ASSERT_FALSE(analyzerWebParseReplayTargetForTest("a", target));
+    TEST_ASSERT_FALSE(analyzerWebParseReplayTargetForTest("b", target));
+    TEST_ASSERT_FALSE(analyzerWebParseReplayTargetForTest("AA", target));
+    TEST_ASSERT_FALSE(analyzerWebParseReplayTargetForTest(" original", target));
+}
+
+void test_replay_state_strings_are_canonical()
+{
+    TEST_ASSERT_EQUAL_STRING("idle", analyzerWebReplayStateStringForTest(ReplayState::Idle));
+    TEST_ASSERT_EQUAL_STRING("running", analyzerWebReplayStateStringForTest(ReplayState::Running));
+    TEST_ASSERT_EQUAL_STRING("completed", analyzerWebReplayStateStringForTest(ReplayState::Completed));
+    TEST_ASSERT_EQUAL_STRING("stopped", analyzerWebReplayStateStringForTest(ReplayState::Stopped));
+    TEST_ASSERT_EQUAL_STRING("failed", analyzerWebReplayStateStringForTest(ReplayState::Failed));
+}
+
+void test_replay_start_error_strings_are_canonical()
+{
+    TEST_ASSERT_EQUAL_STRING("", analyzerWebReplayStartErrorForTest(ReplayStartResult::Ok));
+    TEST_ASSERT_EQUAL_STRING("busy", analyzerWebReplayStartErrorForTest(ReplayStartResult::Busy));
+    TEST_ASSERT_EQUAL_STRING("recorder_unavailable", analyzerWebReplayStartErrorForTest(ReplayStartResult::RecorderUnavailable));
+    TEST_ASSERT_EQUAL_STRING("recording_active", analyzerWebReplayStartErrorForTest(ReplayStartResult::RecordingActive));
+    TEST_ASSERT_EQUAL_STRING("empty_recording", analyzerWebReplayStartErrorForTest(ReplayStartResult::Empty));
+    TEST_ASSERT_EQUAL_STRING("too_many_frames", analyzerWebReplayStartErrorForTest(ReplayStartResult::TooManyFrames));
+}
+
+void test_replay_error_prefers_tx_failure_then_start_failure_then_empty()
+{
+    TEST_ASSERT_EQUAL_STRING("", analyzerWebReplayErrorForTest(ReplayStartResult::Ok, TxSendResult::Ok));
+    TEST_ASSERT_EQUAL_STRING("rate_limited", analyzerWebReplayErrorForTest(ReplayStartResult::Ok, TxSendResult::RateLimited));
+    TEST_ASSERT_EQUAL_STRING("empty_recording", analyzerWebReplayErrorForTest(ReplayStartResult::Empty, TxSendResult::Ok));
+    TEST_ASSERT_EQUAL_STRING("tx_disabled", analyzerWebReplayErrorForTest(ReplayStartResult::Busy, TxSendResult::TxDisabled));
+}
+
 int main(int, char **)
 {
     UNITY_BEGIN();
@@ -616,5 +665,9 @@ int main(int, char **)
     RUN_TEST(test_tx_bad_request_response_is_canonical);
     RUN_TEST(test_tx_body_owner_tracks_only_acquiring_request_before_timeout);
     RUN_TEST(test_tx_body_owner_timeout_allows_new_request_to_reacquire);
+    RUN_TEST(test_replay_target_parser_accepts_only_exact_tokens);
+    RUN_TEST(test_replay_state_strings_are_canonical);
+    RUN_TEST(test_replay_start_error_strings_are_canonical);
+    RUN_TEST(test_replay_error_prefers_tx_failure_then_start_failure_then_empty);
     return UNITY_END();
 }
