@@ -32,6 +32,10 @@ const recordStartBtn = document.getElementById('record-start-btn');
 const recordStopBtn = document.getElementById('record-stop-btn');
 const recordDownload = document.getElementById('record-download');
 const recordStatusEl = document.getElementById('record-status');
+const replayTarget = document.getElementById('replay-target');
+const replayStartBtn = document.getElementById('replay-start-btn');
+const replayStopBtn = document.getElementById('replay-stop-btn');
+const replayStatusEl = document.getElementById('replay-status');
 const wifiMode = document.getElementById('wifi-mode');
 const wifiIp = document.getElementById('wifi-ip');
 const wifiSsid = document.getElementById('wifi-ssid');
@@ -1048,7 +1052,38 @@ async function refreshTxBanner() {
     };
     paintTxState();
     paintRecordStatus(s);
+    updateReplayControls(s);
   } catch (e) {}
+}
+
+function replayTargetLabel(value) {
+  if (value === 'A') return '强制 CAN_A';
+  if (value === 'B') return '强制 CAN_B';
+  return '原通道';
+}
+
+function replayStateLabel(state) {
+  if (state === 'running') return '运行中';
+  if (state === 'completed') return '已完成';
+  if (state === 'stopped') return '已停止';
+  if (state === 'failed') return '失败';
+  return '空闲';
+}
+
+function updateReplayControls(s) {
+  const recording = !!s.recording;
+  const count = Number(s.record_count || 0);
+  const state = String(s.replay_state || 'idle');
+  const running = state === 'running';
+  const total = Number(s.replay_total || 0);
+  const sent = Number(s.replay_sent || 0);
+  const error = String(s.replay_error || '');
+  replayStartBtn.disabled = recording || count <= 0 || running;
+  replayStopBtn.disabled = !running;
+  let text = `回放：${replayStateLabel(state)}`;
+  if (total > 0) text += ` · ${sent}/${total}`;
+  if (error) text += ` · ${error}`;
+  replayStatusEl.textContent = text;
 }
 
 function paintRecordStatus(s) {
@@ -1143,6 +1178,45 @@ recordStartBtn.onclick = () => {
 };
 recordStopBtn.onclick = () => {
   if (sendCmd({ cmd: 'record_stop' })) setTimeout(refreshTxBanner, 100);
+};
+replayStartBtn.onclick = async () => {
+  const target = replayTarget.value;
+  const targetText = replayTargetLabel(target);
+  if (!confirm(`将回放当前录制缓冲到${targetText}。这是多帧 CAN 发送操作，可能影响总线和设备状态，确认提交回放请求？`)) return;
+  replayStartBtn.disabled = true;
+  replayStatusEl.textContent = `回放：${targetText} 请求提交中…`;
+  let submitted = false;
+  try {
+    const r = await fetch('/api/replay/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ target }),
+    });
+    const body = await r.json().catch(() => ({}));
+    if (r.ok && body.ok) submitted = true;
+    else replayStatusEl.textContent = `回放启动提交失败：${body.error || r.status}`;
+  } catch (err) {
+    replayStatusEl.textContent = `回放启动提交失败：${err.message || err}`;
+  } finally {
+    await refreshTxBanner();
+    if (submitted) replayStatusEl.textContent = `回放：${targetText} 请求已提交，等待设备处理…`;
+  }
+};
+replayStopBtn.onclick = async () => {
+  replayStopBtn.disabled = true;
+  replayStatusEl.textContent = '回放：停止请求提交中…';
+  let submitted = false;
+  try {
+    const r = await fetch('/api/replay/stop', { method: 'POST' });
+    const body = await r.json().catch(() => ({}));
+    if (r.ok && body.ok) submitted = true;
+    else replayStatusEl.textContent = `回放停止提交失败：${body.error || r.status}`;
+  } catch (err) {
+    replayStatusEl.textContent = `回放停止提交失败：${err.message || err}`;
+  } finally {
+    await refreshTxBanner();
+    if (submitted) replayStatusEl.textContent = '回放：停止请求已提交，等待设备处理…';
+  }
 };
 recordDownload.addEventListener('click', (e) => {
   if (recordDownload.classList.contains('disabled')) e.preventDefault();

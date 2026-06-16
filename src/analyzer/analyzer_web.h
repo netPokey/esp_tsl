@@ -1,6 +1,7 @@
 #pragma once
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include "analyzer/bus_stats.h"
 #include "analyzer/frame_queue.h"
 #include "analyzer/id_table.h"
@@ -8,6 +9,7 @@
 #include "analyzer/label_store.h"
 #include "analyzer/pretrigger_buffer.h"
 #include "analyzer/recorder.h"
+#include "analyzer/replay_service.h"
 #include "analyzer/signal_window.h"
 #include "analyzer/snapshot_store.h"
 #include "analyzer/tx_service.h"
@@ -245,7 +247,74 @@ inline const char *analyzerWebTxError(TxSendResult result)
     return "unknown";
 }
 
-#if !defined(ARDUINO)
+inline bool analyzerWebParseReplayTarget(const char *text, ReplayTarget &target)
+{
+    if (!text)
+        return false;
+    if (strcmp(text, "original") == 0)
+    {
+        target = ReplayTarget::Original;
+        return true;
+    }
+    if (strcmp(text, "A") == 0)
+    {
+        target = ReplayTarget::ForceA;
+        return true;
+    }
+    if (strcmp(text, "B") == 0)
+    {
+        target = ReplayTarget::ForceB;
+        return true;
+    }
+    return false;
+}
+
+inline const char *analyzerWebReplayStateString(ReplayState state)
+{
+    switch (state)
+    {
+    case ReplayState::Idle:
+        return "idle";
+    case ReplayState::Running:
+        return "running";
+    case ReplayState::Completed:
+        return "completed";
+    case ReplayState::Stopped:
+        return "stopped";
+    case ReplayState::Failed:
+        return "failed";
+    }
+    return "failed";
+}
+
+inline const char *analyzerWebReplayStartError(ReplayStartResult result)
+{
+    switch (result)
+    {
+    case ReplayStartResult::Ok:
+        return "";
+    case ReplayStartResult::Busy:
+        return "busy";
+    case ReplayStartResult::RecorderUnavailable:
+        return "recorder_unavailable";
+    case ReplayStartResult::RecordingActive:
+        return "recording_active";
+    case ReplayStartResult::Empty:
+        return "empty_recording";
+    case ReplayStartResult::TooManyFrames:
+        return "too_many_frames";
+    }
+    return "busy";
+}
+
+inline const char *analyzerWebReplayError(ReplayStartResult start_result, TxSendResult tx_result)
+{
+    if (tx_result != TxSendResult::Ok)
+        return analyzerWebTxError(tx_result);
+    return analyzerWebReplayStartError(start_result);
+}
+
+#if defined(NATIVE_BUILD)
 inline bool analyzerWebParseChannelForTest(const char *text, uint8_t &channel)
 {
     return analyzerWebParseChannelToken(text, channel);
@@ -314,6 +383,26 @@ inline const char *analyzerWebTxErrorForTest(TxSendResult result)
     return analyzerWebTxError(result);
 }
 
+inline bool analyzerWebParseReplayTargetForTest(const char *text, ReplayTarget &target)
+{
+    return analyzerWebParseReplayTarget(text, target);
+}
+
+inline const char *analyzerWebReplayStateStringForTest(ReplayState state)
+{
+    return analyzerWebReplayStateString(state);
+}
+
+inline const char *analyzerWebReplayStartErrorForTest(ReplayStartResult result)
+{
+    return analyzerWebReplayStartError(result);
+}
+
+inline const char *analyzerWebReplayErrorForTest(ReplayStartResult start_result, TxSendResult tx_result)
+{
+    return analyzerWebReplayError(start_result, tx_result);
+}
+
 inline const char *analyzerWebTxPendingJsonForTest()
 {
     return analyzerWebTxAcceptedJson();
@@ -353,6 +442,6 @@ inline void analyzerWebReleaseTxBodyForTest(TxBodyBusyState &state, const void *
 void analyzerWebSetContext(FrameQueue *queue, IdTable *table, BusStatsTracker *stats,
                            PretriggerBuffer *pretrigger, SnapshotStore *snapshots, LabelStore *labels,
                            WatchedSignalWindow *signals, CommonSignalStore *common_signals,
-                           Recorder *recorder, TxService *tx_service);
+                           Recorder *recorder, TxService *tx_service, ReplayService *replay_service = nullptr);
 void analyzerWebBegin();
 void analyzerWebLoop();

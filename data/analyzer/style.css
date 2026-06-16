@@ -95,3 +95,5 @@ tr.baselined { opacity: 0.45; }
 .tx-send-controls input { width: 72px; }
 .tx-send-controls .tx-byte { width: 42px; text-transform: uppercase; }
 #tx-send-status { min-width: 180px; color: #ddd; }
+#replay-target { min-width: 110px; }
+#replay-status { min-width: 220px; color: #ddd; }

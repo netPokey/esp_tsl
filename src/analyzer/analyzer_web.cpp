@@ -34,6 +34,7 @@ WatchedSignalWindow *g_signals = nullptr;
 CommonSignalStore *g_commonSignals = nullptr;
 Recorder *g_recorder = nullptr;
 TxService *g_txService = nullptr;
+ReplayService *g_replayService = nullptr;
 
 constexpr uint32_t kDirtyKeys = static_cast<uint32_t>(kChannelCount) * kStdIdCount;
 uint8_t g_dirty[kDirtyKeys / 8] = {};
@@ -77,7 +78,9 @@ enum class PendingCmdType : uint8_t
     P4Hints,
     RecordStart,
     RecordStop,
-    TxSend
+    TxSend,
+    ReplayStart,
+    ReplayStop
 };
 
 struct PendingCmd
@@ -89,6 +92,7 @@ struct PendingCmd
     uint16_t id = 0;
     uint8_t dlc = 0;
     uint8_t data[8] = {};
+    ReplayTarget replay_target = ReplayTarget::Original;
     char text[kLabelTextLen] = {};
 };
 
@@ -97,6 +101,7 @@ constexpr size_t kMaxWsCommandBytes = 256;
 constexpr size_t kMaxCommonSignalsJsonBytes = 4096;
 constexpr size_t kMaxWifiJsonBytes = 256;
 constexpr size_t kMaxTxJsonBytes = 256;
+constexpr size_t kMaxReplayJsonBytes = 128;
 constexpr uint32_t kPowerActionDelayMs = 200;
 constexpr uint32_t kShutdownSleepDelayMs = 100;
 PendingCmd g_pending[kPendingCmdCap];
@@ -111,6 +116,7 @@ portMUX_TYPE g_txBodyMux = portMUX_INITIALIZER_UNLOCKED;
 char g_commonSignalBody[kMaxCommonSignalsJsonBytes] = {};
 char g_wifiBody[kMaxWifiJsonBytes + 1] = {};
 char g_txBody[kMaxTxJsonBytes + 1] = {};
+char g_replayBody[kMaxReplayJsonBytes + 1] = {};
 TxBodyBusyState g_txBodyState;
 AnalyzerWifiCredentials g_pendingWifi;
 volatile bool g_pendingWifiValid = false;
@@ -262,6 +268,11 @@ bool parseTxSendRequest(JsonDocument &doc, uint8_t &channel, uint32_t &id, uint8
                                             doc["dlc"].is<int>(), doc["dlc"].as<int>(),
                                             dataIsInt, dataValues, count,
                                             channel, id, dlc, data);
+}
+
+bool parseReplayStartRequest(JsonDocument &doc, ReplayTarget &target)
+{
+    return analyzerWebParseReplayTarget(doc["target"] | nullptr, target);
 }
 
 void jsonAddCommonSignal(JsonArray array, const CommonSignalSpec &spec)
@@ -658,7 +669,7 @@ void processPendingCommand(const PendingCmd &cmd)
         sendSignalHints(cmd.channel, cmd.id);
         break;
     case PendingCmdType::RecordStart:
-        if (g_recorder)
+        if (g_recorder && (!g_replayService || g_replayService->state() != ReplayState::Running))
             g_recorder->start();
         break;
     case PendingCmdType::RecordStop:
@@ -676,6 +687,30 @@ void processPendingCommand(const PendingCmd &cmd)
             char msg[64];
             snprintf(msg, sizeof(msg), "[tx] send %s", result == TxSendResult::Ok ? "ok" : analyzerWebTxError(result));
             Serial.println(msg);
+        }
+        break;
+    case PendingCmdType::ReplayStart:
+        if (!g_replayService)
+        {
+            Serial.println("[replay] start failed: recorder_unavailable");
+            break;
+        }
+        {
+            const ReplayStartResult result = g_replayService->start(cmd.replay_target, millis());
+            char msg[80];
+            snprintf(msg, sizeof(msg), "[replay] start %s", result == ReplayStartResult::Ok ? "ok" : analyzerWebReplayStartError(result));
+            Serial.println(msg);
+        }
+        break;
+    case PendingCmdType::ReplayStop:
+        if (!g_replayService)
+        {
+            Serial.println("[replay] stop ignored: recorder_unavailable");
+            break;
+        }
+        {
+            const ReplayStopResult result = g_replayService->stop();
+            Serial.println(result == ReplayStopResult::Ok ? "[replay] stop ok" : "[replay] stop not_running");
         }
         break;
     }
@@ -916,7 +951,7 @@ void pushBusStats()
 void analyzerWebSetContext(FrameQueue *queue, IdTable *table, BusStatsTracker *stats,
                            PretriggerBuffer *pretrigger, SnapshotStore *snapshots, LabelStore *labels,
                            WatchedSignalWindow *signals, CommonSignalStore *common_signals,
-                           Recorder *recorder, TxService *tx_service)
+                           Recorder *recorder, TxService *tx_service, ReplayService *replay_service)
 {
     g_queue = queue;
     g_table = table;
@@ -928,6 +963,7 @@ void analyzerWebSetContext(FrameQueue *queue, IdTable *table, BusStatsTracker *s
     g_commonSignals = common_signals;
     g_recorder = recorder;
     g_txService = tx_service;
+    g_replayService = replay_service;
 }
 
 void analyzerWebBegin()
@@ -947,6 +983,14 @@ void analyzerWebBegin()
         out += ",\"record_count\":" + String(g_recorder ? static_cast<uint32_t>(g_recorder->count()) : 0);
         out += ",\"record_capacity\":" + String(g_recorder ? static_cast<uint32_t>(g_recorder->capacity()) : 0);
         out += ",\"record_dropped\":" + String(g_recorder ? g_recorder->dropped() : 0);
+        out += ",\"replay_state\":\"";
+        out += g_replayService ? analyzerWebReplayStateString(g_replayService->state()) : "idle";
+        out += "\"";
+        out += ",\"replay_total\":" + String(g_replayService ? static_cast<uint32_t>(g_replayService->total()) : 0);
+        out += ",\"replay_sent\":" + String(g_replayService ? static_cast<uint32_t>(g_replayService->sent()) : 0);
+        out += ",\"replay_error\":\"";
+        out += g_replayService ? analyzerWebReplayError(g_replayService->lastStartResult(), g_replayService->lastTxResult()) : "";
+        out += "\"";
         out += "}";
         request->send(200, "application/json", out);
     });
@@ -1024,6 +1068,58 @@ void analyzerWebBegin()
                   setAnalyzerChannelTxEnabled(1, body.indexOf("true") >= 0);
                   request->send(200, "application/json", "{\"ok\":true}");
               });
+
+    server.on("/api/replay/start", HTTP_POST,
+              [](AsyncWebServerRequest *) {},
+              nullptr,
+              [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+                  if (!analyzerWebBodyChunkIsValid(index, len, total, kMaxReplayJsonBytes))
+                  {
+                      request->send(400, "application/json", analyzerWebBadRequestJson());
+                      return;
+                  }
+                  if (index == 0)
+                      memset(g_replayBody, 0, sizeof(g_replayBody));
+                  if (len > 0)
+                      memcpy(g_replayBody + index, data, len);
+                  if (!analyzerWebBodyChunkCompletes(index, len, total))
+                      return;
+                  g_replayBody[total] = '\0';
+
+                  JsonDocument doc;
+                  if (deserializeJson(doc, g_replayBody, total))
+                  {
+                      request->send(400, "application/json", analyzerWebBadRequestJson());
+                      return;
+                  }
+
+                  PendingCmd pending;
+                  pending.type = PendingCmdType::ReplayStart;
+                  if (!parseReplayStartRequest(doc, pending.replay_target))
+                  {
+                      request->send(400, "application/json", analyzerWebBadRequestJson());
+                      return;
+                  }
+
+                  if (!enqueuePendingCommand(pending))
+                  {
+                      request->send(503, "application/json", "{\"ok\":false,\"error\":\"queue_full\"}");
+                      return;
+                  }
+
+                  request->send(200, "application/json", analyzerWebTxAcceptedJson());
+              });
+
+    server.on("/api/replay/stop", HTTP_POST, [](AsyncWebServerRequest *request) {
+        PendingCmd pending;
+        pending.type = PendingCmdType::ReplayStop;
+        if (!enqueuePendingCommand(pending))
+        {
+            request->send(503, "application/json", "{\"ok\":false,\"error\":\"queue_full\"}");
+            return;
+        }
+        request->send(200, "application/json", analyzerWebTxAcceptedJson());
+    });
 
     server.on("/api/tx/send", HTTP_POST,
               [](AsyncWebServerRequest *) {},
@@ -1204,9 +1300,11 @@ void analyzerWebLoop()
     processPendingCommands();
     processPendingWifi();
     processPendingPowerAction();
+    const uint32_t now = millis();
+    if (g_replayService)
+        g_replayService->tick(now);
     ws.cleanupClients();
 
-    const uint32_t now = millis();
     if (g_stats)
         g_stats->update(now, g_queue ? g_queue->dropped() : 0);
 
