@@ -14,6 +14,26 @@
     <button id="tx-b-toggle">CAN_B 发送</button>
     <span id="bus-health">CAN_A: ? · CAN_B: ?</span>
   </div>
+  <div class="controls tx-send-controls">
+    <label>发送通道
+      <select id="tx-send-channel">
+        <option value="A">CAN_A</option>
+        <option value="B">CAN_B</option>
+      </select>
+    </label>
+    <label>ID <input id="tx-send-id" type="text" value="0x000" inputmode="text"/></label>
+    <label>DLC <input id="tx-send-dlc" type="number" min="0" max="8" value="8"/></label>
+    <label>B0 <input class="tx-byte" id="tx-byte-0" type="text" value="00"/></label>
+    <label>B1 <input class="tx-byte" id="tx-byte-1" type="text" value="00"/></label>
+    <label>B2 <input class="tx-byte" id="tx-byte-2" type="text" value="00"/></label>
+    <label>B3 <input class="tx-byte" id="tx-byte-3" type="text" value="00"/></label>
+    <label>B4 <input class="tx-byte" id="tx-byte-4" type="text" value="00"/></label>
+    <label>B5 <input class="tx-byte" id="tx-byte-5" type="text" value="00"/></label>
+    <label>B6 <input class="tx-byte" id="tx-byte-6" type="text" value="00"/></label>
+    <label>B7 <input class="tx-byte" id="tx-byte-7" type="text" value="00"/></label>
+    <button id="tx-send-btn">发送单帧</button>
+    <span id="tx-send-status">单帧发送：待命</span>
+  </div>
   <section class="intro-panel">
     <h1>CAN 分析仪 · 功能介绍</h1>
     <div class="intro-grid">

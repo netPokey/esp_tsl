@@ -17,6 +17,7 @@
 #include "analyzer/rx_task.h"
 #include "analyzer/signal_window.h"
 #include "analyzer/snapshot_store.h"
+#include "analyzer/tx_service.h"
 #include "can_helpers.h"
 #include "drivers/mcp2515_driver.h"
 #include "drivers/twai_driver.h"
@@ -52,6 +53,7 @@ Recorder g_recorder;
 
 std::unique_ptr<MCP2515Driver> g_canA;
 std::unique_ptr<TWAIDriver> g_canB;
+TxService g_txService;
 
 void syncTxMode()
 {
@@ -131,6 +133,7 @@ void setup()
                                    &SPI, 10000000));
     g_canB.reset(new TWAIDriver(static_cast<gpio_num_t>(CAN_TX),
                                 static_cast<gpio_num_t>(CAN_RX)));
+    g_txService.init(g_canA.get(), g_canB.get());
 
     const bool canAOk = g_canA->init();
     const bool canBOk = g_canB->init();
@@ -159,7 +162,8 @@ void setup()
                           &g_labels,
                           (g_signalSlots && g_signalSamples) ? &g_signalWindow : nullptr,
                           &g_commonSignals,
-                          g_recordStorage ? &g_recorder : nullptr);
+                          g_recordStorage ? &g_recorder : nullptr,
+                          &g_txService);
     analyzerWebBegin();
 
     Serial.print("CAN analyzer ready (listen-only): http://");

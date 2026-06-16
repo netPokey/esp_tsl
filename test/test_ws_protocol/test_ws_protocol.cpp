@@ -444,6 +444,143 @@ void test_analyzer_web_parses_only_explicit_valid_channels_and_slots()
     TEST_ASSERT_FALSE(analyzerWebParseSlotForTest("BB", slot));
 }
 
+void test_parse_tx_id_decimal_and_hex()
+{
+    uint32_t id = 0;
+    TEST_ASSERT_TRUE(analyzerWebParseTxIdForTest("291", id));
+    TEST_ASSERT_EQUAL_UINT32(291, id);
+    TEST_ASSERT_TRUE(analyzerWebParseTxIdForTest("0x123", id));
+    TEST_ASSERT_EQUAL_UINT32(0x123, id);
+    TEST_ASSERT_TRUE(analyzerWebParseTxIdForTest("0X7FF", id));
+    TEST_ASSERT_EQUAL_UINT32(0x7FF, id);
+}
+
+void test_parse_tx_id_rejects_bad_values()
+{
+    uint32_t id = 0;
+    TEST_ASSERT_FALSE(analyzerWebParseTxIdForTest(nullptr, id));
+    TEST_ASSERT_FALSE(analyzerWebParseTxIdForTest("", id));
+    TEST_ASSERT_FALSE(analyzerWebParseTxIdForTest("0x", id));
+    TEST_ASSERT_FALSE(analyzerWebParseTxIdForTest("12x", id));
+    TEST_ASSERT_FALSE(analyzerWebParseTxIdForTest("2048", id));
+    TEST_ASSERT_FALSE(analyzerWebParseTxIdForTest("0x800", id));
+}
+
+void test_parse_tx_byte_hex_and_decimal()
+{
+    uint8_t byte = 0;
+    TEST_ASSERT_TRUE(analyzerWebParseTxByteForTest("0xAB", byte));
+    TEST_ASSERT_EQUAL_UINT8(0xAB, byte);
+    TEST_ASSERT_TRUE(analyzerWebParseTxByteForTest("171", byte));
+    TEST_ASSERT_EQUAL_UINT8(171, byte);
+}
+
+void test_parse_tx_byte_rejects_bad_values()
+{
+    uint8_t byte = 0;
+    TEST_ASSERT_FALSE(analyzerWebParseTxByteForTest(nullptr, byte));
+    TEST_ASSERT_FALSE(analyzerWebParseTxByteForTest("", byte));
+    TEST_ASSERT_FALSE(analyzerWebParseTxByteForTest("0x100", byte));
+    TEST_ASSERT_FALSE(analyzerWebParseTxByteForTest("256", byte));
+    TEST_ASSERT_FALSE(analyzerWebParseTxByteForTest("gg", byte));
+}
+
+void test_tx_send_parser_accepts_integer_json_fields()
+{
+    const bool dataIsInt[2] = {true, true};
+    const int dataValues[2] = {0x10, 0x11};
+    uint8_t channel = 0;
+    uint32_t id = 0;
+    uint8_t dlc = 0;
+    uint8_t data[8] = {};
+
+    TEST_ASSERT_TRUE(analyzerWebParseTxSendJsonFieldsForTest("A", true, 0x123, true, 2, dataIsInt, dataValues, 2, channel, id, dlc, data));
+    TEST_ASSERT_EQUAL_UINT8(0, channel);
+    TEST_ASSERT_EQUAL_UINT32(0x123, id);
+    TEST_ASSERT_EQUAL_UINT8(2, dlc);
+    TEST_ASSERT_EQUAL_UINT8(0x10, data[0]);
+    TEST_ASSERT_EQUAL_UINT8(0x11, data[1]);
+}
+
+void test_tx_send_parser_rejects_string_typed_json_fields()
+{
+    const bool dataIsInt[1] = {true};
+    const bool dataIsString[1] = {false};
+    const int dataValues[1] = {0x10};
+    uint8_t channel = 0;
+    uint32_t id = 0;
+    uint8_t dlc = 0;
+    uint8_t data[8] = {};
+
+    TEST_ASSERT_FALSE(analyzerWebParseTxSendJsonFieldsForTest("A", false, 0x123, true, 1, dataIsInt, dataValues, 1, channel, id, dlc, data));
+    TEST_ASSERT_FALSE(analyzerWebParseTxSendJsonFieldsForTest("A", true, 0x123, true, 1, dataIsString, dataValues, 1, channel, id, dlc, data));
+}
+
+void test_tx_result_http_mapping()
+{
+    TEST_ASSERT_EQUAL_INT(200, analyzerWebTxStatusForTest(TxSendResult::Ok));
+    TEST_ASSERT_EQUAL_INT(400, analyzerWebTxStatusForTest(TxSendResult::InvalidChannel));
+    TEST_ASSERT_EQUAL_INT(400, analyzerWebTxStatusForTest(TxSendResult::InvalidId));
+    TEST_ASSERT_EQUAL_INT(400, analyzerWebTxStatusForTest(TxSendResult::InvalidDlc));
+    TEST_ASSERT_EQUAL_INT(409, analyzerWebTxStatusForTest(TxSendResult::TxDisabled));
+    TEST_ASSERT_EQUAL_INT(429, analyzerWebTxStatusForTest(TxSendResult::RateLimited));
+    TEST_ASSERT_EQUAL_INT(503, analyzerWebTxStatusForTest(TxSendResult::DriverUnavailable));
+    TEST_ASSERT_EQUAL_STRING("rate_limited", analyzerWebTxErrorForTest(TxSendResult::RateLimited));
+}
+
+void test_tx_send_enqueue_response_is_pending()
+{
+    TEST_ASSERT_EQUAL_STRING("{\"ok\":true,\"pending\":true}", analyzerWebTxPendingJsonForTest());
+}
+
+void test_tx_body_busy_response_uses_conflict_status()
+{
+    TEST_ASSERT_EQUAL_INT(409, analyzerWebTxBodyBusyStatusForTest());
+}
+
+void test_tx_bad_request_response_is_canonical()
+{
+    TEST_ASSERT_EQUAL_STRING("{\"ok\":false,\"error\":\"bad_request\"}", analyzerWebTxBadRequestJsonForTest());
+}
+
+void test_tx_body_owner_tracks_only_acquiring_request_before_timeout()
+{
+    const void *owner = reinterpret_cast<const void *>(0x1000);
+    const void *other = reinterpret_cast<const void *>(0x2000);
+    TxBodyBusyState state{};
+    const uint32_t startMs = 1000;
+
+    TEST_ASSERT_TRUE(analyzerWebTryAcquireTxBodyForTest(state, owner, startMs));
+    TEST_ASSERT_TRUE(analyzerWebTxBodyIsOwnerForTest(state, owner));
+    TEST_ASSERT_FALSE(analyzerWebTxBodyIsOwnerForTest(state, other));
+    TEST_ASSERT_TRUE(analyzerWebTryAcquireTxBodyForTest(state, owner, startMs + 100));
+    TEST_ASSERT_FALSE(analyzerWebTryAcquireTxBodyForTest(state, other, startMs + 4999));
+
+    analyzerWebReleaseTxBodyForTest(state, other);
+    TEST_ASSERT_TRUE(analyzerWebTxBodyIsOwnerForTest(state, owner));
+
+    analyzerWebReleaseTxBodyForTest(state, owner);
+    TEST_ASSERT_FALSE(analyzerWebTxBodyIsOwnerForTest(state, owner));
+    TEST_ASSERT_TRUE(analyzerWebTryAcquireTxBodyForTest(state, other, startMs + 5000));
+}
+
+void test_tx_body_owner_timeout_allows_new_request_to_reacquire()
+{
+    const void *owner = reinterpret_cast<const void *>(0x1000);
+    const void *other = reinterpret_cast<const void *>(0x2000);
+    TxBodyBusyState state{};
+    const uint32_t startMs = 1000;
+    const uint32_t timeoutMs = analyzerWebTxBodyBusyTimeoutMsForTest();
+
+    TEST_ASSERT_TRUE(analyzerWebTryAcquireTxBodyForTest(state, owner, startMs));
+    TEST_ASSERT_FALSE(analyzerWebTryAcquireTxBodyForTest(state, other, startMs + timeoutMs));
+    TEST_ASSERT_TRUE(analyzerWebTxBodyIsOwnerForTest(state, owner));
+
+    TEST_ASSERT_TRUE(analyzerWebTryAcquireTxBodyForTest(state, other, startMs + timeoutMs + 1));
+    TEST_ASSERT_FALSE(analyzerWebTxBodyIsOwnerForTest(state, owner));
+    TEST_ASSERT_TRUE(analyzerWebTxBodyIsOwnerForTest(state, other));
+}
+
 int main(int, char **)
 {
     UNITY_BEGIN();
@@ -467,5 +604,17 @@ int main(int, char **)
     RUN_TEST(test_analyzer_web_signal_helpers_clamp_confidence_and_age);
     RUN_TEST(test_analyzer_web_body_chunk_helpers_validate_bounds_and_completion);
     RUN_TEST(test_analyzer_web_parses_only_explicit_valid_channels_and_slots);
+    RUN_TEST(test_parse_tx_id_decimal_and_hex);
+    RUN_TEST(test_parse_tx_id_rejects_bad_values);
+    RUN_TEST(test_parse_tx_byte_hex_and_decimal);
+    RUN_TEST(test_parse_tx_byte_rejects_bad_values);
+    RUN_TEST(test_tx_send_parser_accepts_integer_json_fields);
+    RUN_TEST(test_tx_send_parser_rejects_string_typed_json_fields);
+    RUN_TEST(test_tx_result_http_mapping);
+    RUN_TEST(test_tx_send_enqueue_response_is_pending);
+    RUN_TEST(test_tx_body_busy_response_uses_conflict_status);
+    RUN_TEST(test_tx_bad_request_response_is_canonical);
+    RUN_TEST(test_tx_body_owner_tracks_only_acquiring_request_before_timeout);
+    RUN_TEST(test_tx_body_owner_timeout_allows_new_request_to_reacquire);
     return UNITY_END();
 }

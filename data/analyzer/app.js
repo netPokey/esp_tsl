@@ -2,6 +2,12 @@ const banner = document.getElementById('tx-banner');
 const masterToggle = document.getElementById('master-toggle');
 const txAToggle = document.getElementById('tx-a-toggle');
 const txBToggle = document.getElementById('tx-b-toggle');
+const txSendChannel = document.getElementById('tx-send-channel');
+const txSendId = document.getElementById('tx-send-id');
+const txSendDlc = document.getElementById('tx-send-dlc');
+const txSendBtn = document.getElementById('tx-send-btn');
+const txSendStatus = document.getElementById('tx-send-status');
+const txByteInputs = Array.from({ length: 8 }, (_, i) => document.getElementById(`tx-byte-${i}`));
 const busHealth = document.getElementById('bus-health');
 const busStats = document.getElementById('bus-stats');
 const statusEl = document.getElementById('status');
@@ -85,14 +91,44 @@ function textNode(text) { return document.createTextNode(String(text)); }
 function clearNode(node) { while (node.firstChild) node.removeChild(node.firstChild); }
 
 function parseId(text) {
-  const s = String(text || '').trim();
-  if (!s) return null;
-  const n = /^0x/i.test(s) ? Number.parseInt(s, 16) : Number.parseInt(s, 16);
-  return Number.isFinite(n) && n >= 0 && n <= 0x7ff ? n : null;
+  try {
+    return parseBoundedIntText(text, 0x7ff);
+  } catch (e) {
+    return null;
+  }
 }
 
 function targetKey(ch, id) { return `${channelName(ch)}:${id}`; }
 function targetMatches(target, ch, id) { return !!target && target.ch === ch && target.id === id; }
+
+function parseBoundedIntText(text, max) {
+  const raw = String(text || '').trim();
+  if (!raw) throw new Error('请输入数值');
+  const base = /^0x/i.test(raw) ? 16 : 10;
+  const body = base === 16 ? raw.slice(2) : raw;
+  const pattern = base === 16 ? /^[0-9a-fA-F]+$/ : /^[0-9]+$/;
+  if (!body || !pattern.test(body)) throw new Error(`非法数值：${raw}`);
+  const value = Number.parseInt(body, base);
+  if (!Number.isInteger(value) || value < 0 || value > max) throw new Error(`数值超出范围：${raw}`);
+  return value;
+}
+
+function parseTxSendForm() {
+  const ch = txSendChannel.value;
+  const id = parseBoundedIntText(txSendId.value, 0x7FF);
+  const dlc = Number(txSendDlc.value);
+  if ((ch !== 'A' && ch !== 'B') || !Number.isInteger(dlc) || dlc < 0 || dlc > 8) throw new Error('DLC 必须是 0..8');
+  const data = [];
+  for (let i = 0; i < dlc; i++) data.push(parseBoundedIntText(txByteInputs[i].value, 0xFF));
+  return { ch, id, dlc, data };
+}
+
+function updateTxSendButton() {
+  const ch = txSendChannel.value;
+  const channelOn = ch === 'A' ? txState.a && txState.onlineA : txState.b && txState.onlineB;
+  txSendBtn.disabled = !(txState.master && channelOn);
+}
+
 function endianToWire(endian) { return endian === 'motorola' || endian === 1 || endian === '1' ? 1 : 0; }
 function endianToText(endian) { return endian === 1 || endian === '1' || endian === 'motorola' ? 'motorola' : 'intel'; }
 function signedToBool(value) { return value === true || value === 1 || value === '1'; }
@@ -942,6 +978,7 @@ function paintTxState() {
   txAToggle.disabled = !txState.onlineA;
   txBToggle.disabled = !txState.onlineB;
   busHealth.textContent = `CAN_A: ${txState.onlineA ? '在线' : '离线'} · CAN_B: ${txState.onlineB ? '在线' : '离线'}`;
+  updateTxSendButton();
 }
 
 function wifiModeText(mode) {
@@ -1059,6 +1096,36 @@ txAToggle.onclick = async () => {
 txBToggle.onclick = async () => {
   await fetch('/api/can-tx-b', { method: 'POST', body: txState.b ? 'false' : 'true' });
   refreshTxBanner();
+};
+txSendChannel.onchange = updateTxSendButton;
+txSendBtn.onclick = async () => {
+  let payload;
+  try {
+    payload = parseTxSendForm();
+  } catch (err) {
+    txSendStatus.textContent = `单帧发送：${err.message || err}`;
+    return;
+  }
+
+  const idLabel = `0x${payload.id.toString(16).toUpperCase().padStart(3, '0')}`;
+  if (!confirm(`将向通道 ${payload.ch} 发送 ID ${idLabel}，确认继续？`)) return;
+
+  txSendBtn.disabled = true;
+  try {
+    const r = await fetch('/api/tx/send', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const body = await r.json().catch(() => ({}));
+    if (r.ok && body.ok) txSendStatus.textContent = `单帧发送：${payload.ch} ${idLabel} 请求已提交`;
+    else txSendStatus.textContent = `单帧发送失败：${body.error || r.status}`;
+  } catch (err) {
+    txSendStatus.textContent = `单帧发送失败：${err.message || err}`;
+  } finally {
+    await refreshTxBanner();
+    updateTxSendButton();
+  }
 };
 banner.onclick = masterToggle.onclick;
 wifiConnectBtn.onclick = connectWifi;

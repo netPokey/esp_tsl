@@ -91,3 +91,7 @@ tr.baselined { opacity: 0.45; }
   pointer-events: none;
   cursor: default;
 }
+.tx-send-controls { align-items: center; }
+.tx-send-controls input { width: 72px; }
+.tx-send-controls .tx-byte { width: 42px; text-transform: uppercase; }
+#tx-send-status { min-width: 180px; color: #ddd; }
