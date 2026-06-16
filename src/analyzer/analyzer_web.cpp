@@ -12,6 +12,7 @@
 #include <ESPAsyncWebServer.h>
 #include <LittleFS.h>
 #include <WiFi.h>
+#include <cstdio>
 #include <cstring>
 #include <esp_sleep.h>
 #include <esp_timer.h>
@@ -32,6 +33,7 @@ LabelStore *g_labels = nullptr;
 WatchedSignalWindow *g_signals = nullptr;
 CommonSignalStore *g_commonSignals = nullptr;
 Recorder *g_recorder = nullptr;
+TxService *g_txService = nullptr;
 
 constexpr uint32_t kDirtyKeys = static_cast<uint32_t>(kChannelCount) * kStdIdCount;
 uint8_t g_dirty[kDirtyKeys / 8] = {};
@@ -74,7 +76,8 @@ enum class PendingCmdType : uint8_t
     P4Watch,
     P4Hints,
     RecordStart,
-    RecordStop
+    RecordStop,
+    TxSend
 };
 
 struct PendingCmd
@@ -84,6 +87,8 @@ struct PendingCmd
     bool on = false;
     SnapshotSlot slot = SnapshotSlot::A;
     uint16_t id = 0;
+    uint8_t dlc = 0;
+    uint8_t data[8] = {};
     char text[kLabelTextLen] = {};
 };
 
@@ -91,6 +96,7 @@ constexpr size_t kPendingCmdCap = 8;
 constexpr size_t kMaxWsCommandBytes = 256;
 constexpr size_t kMaxCommonSignalsJsonBytes = 4096;
 constexpr size_t kMaxWifiJsonBytes = 256;
+constexpr size_t kMaxTxJsonBytes = 256;
 constexpr uint32_t kPowerActionDelayMs = 200;
 constexpr uint32_t kShutdownSleepDelayMs = 100;
 PendingCmd g_pending[kPendingCmdCap];
@@ -101,8 +107,11 @@ portMUX_TYPE g_pendingMux = portMUX_INITIALIZER_UNLOCKED;
 portMUX_TYPE g_labelMux = portMUX_INITIALIZER_UNLOCKED;
 portMUX_TYPE g_wifiMux = portMUX_INITIALIZER_UNLOCKED;
 portMUX_TYPE g_powerMux = portMUX_INITIALIZER_UNLOCKED;
+portMUX_TYPE g_txBodyMux = portMUX_INITIALIZER_UNLOCKED;
 char g_commonSignalBody[kMaxCommonSignalsJsonBytes] = {};
 char g_wifiBody[kMaxWifiJsonBytes + 1] = {};
+char g_txBody[kMaxTxJsonBytes + 1] = {};
+TxBodyBusyState g_txBodyState;
 AnalyzerWifiCredentials g_pendingWifi;
 volatile bool g_pendingWifiValid = false;
 
@@ -234,6 +243,25 @@ bool parseCommonSignalSpec(JsonVariantConst src, CommonSignalSpec &out)
     out.offset = offsetVar.as<float>();
     strlcpy(out.label, label, sizeof(out.label));
     return true;
+}
+
+bool parseTxSendRequest(JsonDocument &doc, uint8_t &channel, uint32_t &id, uint8_t &dlc, uint8_t *data)
+{
+    JsonArrayConst arr = doc["data"].as<JsonArrayConst>();
+    bool dataIsInt[8] = {};
+    int dataValues[8] = {};
+    const size_t count = arr.isNull() ? 0 : (arr.size() > 8 ? 8 : arr.size());
+    for (size_t i = 0; i < count; ++i)
+    {
+        dataIsInt[i] = arr[i].is<int>();
+        if (dataIsInt[i])
+            dataValues[i] = arr[i].as<int>();
+    }
+    return analyzerWebParseTxSendJsonFields(doc["ch"] | nullptr,
+                                            doc["id"].is<int>(), doc["id"].as<int>(),
+                                            doc["dlc"].is<int>(), doc["dlc"].as<int>(),
+                                            dataIsInt, dataValues, count,
+                                            channel, id, dlc, data);
 }
 
 void jsonAddCommonSignal(JsonArray array, const CommonSignalSpec &spec)
@@ -433,6 +461,29 @@ void markDirty(uint8_t channel, uint32_t id)
         g_dirty[key >> 3] |= static_cast<uint8_t>(1u << (key & 7));
 }
 
+bool takeTxBodyBuffer(AsyncWebServerRequest *request, uint32_t nowMs)
+{
+    portENTER_CRITICAL(&g_txBodyMux);
+    const bool acquired = analyzerWebTryAcquireTxBody(g_txBodyState, request, nowMs);
+    portEXIT_CRITICAL(&g_txBodyMux);
+    return acquired;
+}
+
+bool txBodyBufferIsOwner(AsyncWebServerRequest *request)
+{
+    portENTER_CRITICAL(&g_txBodyMux);
+    const bool isOwner = analyzerWebTxBodyIsOwner(g_txBodyState, request);
+    portEXIT_CRITICAL(&g_txBodyMux);
+    return isOwner;
+}
+
+void releaseTxBodyBuffer(AsyncWebServerRequest *request)
+{
+    portENTER_CRITICAL(&g_txBodyMux);
+    analyzerWebReleaseTxBody(g_txBodyState, request);
+    portEXIT_CRITICAL(&g_txBodyMux);
+}
+
 bool enqueuePendingCommand(const PendingCmd &cmd)
 {
     bool queued = false;
@@ -613,6 +664,19 @@ void processPendingCommand(const PendingCmd &cmd)
     case PendingCmdType::RecordStop:
         if (g_recorder)
             g_recorder->stop();
+        break;
+    case PendingCmdType::TxSend:
+        if (!g_txService)
+        {
+            Serial.println("[tx] send failed: driver_unavailable");
+            break;
+        }
+        {
+            const TxSendResult result = g_txService->sendSingle(cmd.channel, cmd.id, cmd.dlc, cmd.data, millis());
+            char msg[64];
+            snprintf(msg, sizeof(msg), "[tx] send %s", result == TxSendResult::Ok ? "ok" : analyzerWebTxError(result));
+            Serial.println(msg);
+        }
         break;
     }
 }
@@ -852,7 +916,7 @@ void pushBusStats()
 void analyzerWebSetContext(FrameQueue *queue, IdTable *table, BusStatsTracker *stats,
                            PretriggerBuffer *pretrigger, SnapshotStore *snapshots, LabelStore *labels,
                            WatchedSignalWindow *signals, CommonSignalStore *common_signals,
-                           Recorder *recorder)
+                           Recorder *recorder, TxService *tx_service)
 {
     g_queue = queue;
     g_table = table;
@@ -863,6 +927,7 @@ void analyzerWebSetContext(FrameQueue *queue, IdTable *table, BusStatsTracker *s
     g_signals = signals;
     g_commonSignals = common_signals;
     g_recorder = recorder;
+    g_txService = tx_service;
 }
 
 void analyzerWebBegin()
@@ -958,6 +1023,58 @@ void analyzerWebBegin()
                   const String body(reinterpret_cast<const char *>(data), len);
                   setAnalyzerChannelTxEnabled(1, body.indexOf("true") >= 0);
                   request->send(200, "application/json", "{\"ok\":true}");
+              });
+
+    server.on("/api/tx/send", HTTP_POST,
+              [](AsyncWebServerRequest *) {},
+              nullptr,
+              [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+                  if (index == 0 && !takeTxBodyBuffer(request, millis()))
+                  {
+                      request->send(analyzerWebTxBodyBusyStatus(), "application/json", "{\"ok\":false,\"error\":\"busy\"}");
+                      return;
+                  }
+
+                  if (!txBodyBufferIsOwner(request) || !analyzerWebBodyChunkIsValid(index, len, total, kMaxTxJsonBytes))
+                  {
+                      releaseTxBodyBuffer(request);
+                      request->send(400, "application/json", analyzerWebBadRequestJson());
+                      return;
+                  }
+
+                  memcpy(g_txBody + index, data, len);
+                  if (!analyzerWebBodyChunkCompletes(index, len, total))
+                      return;
+                  g_txBody[total] = '\0';
+
+                  JsonDocument doc;
+                  if (deserializeJson(doc, g_txBody, total))
+                  {
+                      releaseTxBodyBuffer(request);
+                      request->send(400, "application/json", analyzerWebBadRequestJson());
+                      return;
+                  }
+
+                  PendingCmd pending;
+                  pending.type = PendingCmdType::TxSend;
+                  uint32_t id = 0;
+                  if (!parseTxSendRequest(doc, pending.channel, id, pending.dlc, pending.data))
+                  {
+                      releaseTxBodyBuffer(request);
+                      request->send(400, "application/json", analyzerWebBadRequestJson());
+                      return;
+                  }
+                  pending.id = static_cast<uint16_t>(id);
+
+                  if (!enqueuePendingCommand(pending))
+                  {
+                      releaseTxBodyBuffer(request);
+                      request->send(503, "application/json", "{\"ok\":false,\"error\":\"queue_full\"}");
+                      return;
+                  }
+
+                  releaseTxBodyBuffer(request);
+                  request->send(200, "application/json", analyzerWebTxAcceptedJson());
               });
 
     server.on("/api/labels", HTTP_GET, [](AsyncWebServerRequest *request) {
