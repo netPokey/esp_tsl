@@ -141,7 +141,7 @@ constexpr const char *kPrefsNs = "an_wifi";
 constexpr const char *kPrefsSsid = "ssid";
 constexpr const char *kPrefsPass = "pass";
 constexpr const char *kApSsid = "CAN-Analyzer";
-constexpr const char *kApPass = "analyzer1234";
+constexpr const char *kApPass = "1234567890";
 constexpr unsigned long kStaTimeoutMs = 10000;
 
 #if defined(ARDUINO)
@@ -416,7 +416,7 @@ git commit -m "feat(analyzer): add WiFi and power control web APIs"
 ```html
   <section class="network-panel">
     <h2>网络与电源</h2>
-    <div class="panel-summary">配置 WiFi 后设备会优先连接路由器；连接失败会自动回到 AP：CAN-Analyzer / analyzer1234。关机为深度睡眠，需要按复位或重新上电恢复。</div>
+    <div class="panel-summary">配置 WiFi 后设备会优先连接路由器；连接失败会自动回到 AP：CAN-Analyzer / 1234567890。关机为深度睡眠，需要按复位或重新上电恢复。</div>
     <div class="network-grid">
       <label>当前模式 <input id="wifi-mode" type="text" readonly/></label>
       <label>当前 IP <input id="wifi-ip" type="text" readonly/></label>
@@ -592,7 +592,7 @@ COPYFILE_DISABLE=1 pio run -e analyzer -t uploadfs --upload-port /dev/cu.usbmode
 ```
 
 Manual/API verification:
-- 无配置或错误密码：设备回 AP `CAN-Analyzer / analyzer1234`。
+- 无配置或错误密码：设备回 AP `CAN-Analyzer / 1234567890`。
 - `GET /api/wifi` 返回 mode/ip/ssid/pass。
 - `POST /api/wifi` 正确密码后返回 `connected:true` 与 STA IP。
 - `POST /api/restart` 设备重启。

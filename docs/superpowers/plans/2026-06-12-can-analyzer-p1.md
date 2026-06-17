@@ -857,7 +857,7 @@ String analyzerWifiBegin()
         return WiFi.localIP().toString();
 
     WiFi.mode(WIFI_AP);
-    WiFi.softAP("CAN-Analyzer", "analyzer1234");
+    WiFi.softAP("CAN-Analyzer", "1234567890");
     delay(120);
     return WiFi.softAPIP().toString();
 }

@@ -29,7 +29,7 @@ if (trySta("jhwctcm", "12345678")) return WiFi.localIP().toString();
 if (trySta("Cc", "452509526..")) return WiFi.localIP().toString();
 ```
 
-失败后进入 AP：`CAN-Analyzer / analyzer1234`，IP `192.168.4.1`。
+失败后进入 AP：`CAN-Analyzer / 1234567890`，IP `192.168.4.1`。
 
 新设计移除硬编码私密 WiFi，统一使用 NVS/Preferences 持久化配置。
 
@@ -51,7 +51,7 @@ if (trySta("Cc", "452509526..")) return WiFi.localIP().toString();
 1. 读取 NVS 中的 `ssid/pass`。
 2. 若 `ssid` 非空，调用 `trySta(ssid, pass)`，最多等待 10 秒。
 3. 成功则保持 `WIFI_STA`，返回 `WiFi.localIP().toString()`。
-4. 失败或无配置则调用 `analyzerWifiStartAp()`，启动 AP：`CAN-Analyzer / analyzer1234`，返回 AP IP。
+4. 失败或无配置则调用 `analyzerWifiStartAp()`，启动 AP：`CAN-Analyzer / 1234567890`，返回 AP IP。
 
 ### 3.3 手动连接流程
 
@@ -147,7 +147,7 @@ void analyzerWifiStartAp();
 - “重启设备”按钮
 - “关机（深度睡眠）”按钮
 - 说明文本：
-  - 连接失败会自动回 AP：`CAN-Analyzer / analyzer1234`。
+  - 连接失败会自动回 AP：`CAN-Analyzer / 1234567890`。
   - 关机后需要按复位或重新上电恢复。
 
 前端行为：
@@ -173,7 +173,7 @@ void analyzerWifiStartAp();
 
 ### 设备验收
 
-1. 首次启动无配置：进入 AP `CAN-Analyzer / analyzer1234`，网页可打开 `192.168.4.1`。
+1. 首次启动无配置：进入 AP `CAN-Analyzer / 1234567890`，网页可打开 `192.168.4.1`。
 2. 页面输入 WiFi，点击“连接 WiFi”：成功后显示新 STA IP。
 3. 输入错误密码，点击连接：设备回 AP，页面/串口显示 AP IP。
 4. 断电重启：自动读取保存配置并尝试 STA；失败回 AP。
