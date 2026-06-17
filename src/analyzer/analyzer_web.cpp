@@ -1,6 +1,7 @@
 #include "analyzer/analyzer_web.h"
 #include "analyzer/analyzer_control.h"
 #include "analyzer/analyzer_wifi.h"
+#include "analyzer/record_asc_format.h"
 #include "analyzer/record_format.h"
 #include "analyzer/recorder.h"
 #include "analyzer/signal_hints.h"
@@ -35,6 +36,7 @@ CommonSignalStore *g_commonSignals = nullptr;
 Recorder *g_recorder = nullptr;
 TxService *g_txService = nullptr;
 ReplayService *g_replayService = nullptr;
+RecordTriggerService *g_recordTrigger = nullptr;
 
 constexpr uint32_t kDirtyKeys = static_cast<uint32_t>(kChannelCount) * kStdIdCount;
 uint8_t g_dirty[kDirtyKeys / 8] = {};
@@ -80,7 +82,9 @@ enum class PendingCmdType : uint8_t
     RecordStop,
     TxSend,
     ReplayStart,
-    ReplayStop
+    ReplayStop,
+    RecordTriggerArm,
+    RecordTriggerDisarm
 };
 
 struct PendingCmd
@@ -93,6 +97,7 @@ struct PendingCmd
     uint8_t dlc = 0;
     uint8_t data[8] = {};
     ReplayTarget replay_target = ReplayTarget::Original;
+    RecordTriggerConfig record_trigger_config = {};
     char text[kLabelTextLen] = {};
 };
 
@@ -102,6 +107,7 @@ constexpr size_t kMaxCommonSignalsJsonBytes = 4096;
 constexpr size_t kMaxWifiJsonBytes = 256;
 constexpr size_t kMaxTxJsonBytes = 256;
 constexpr size_t kMaxReplayJsonBytes = 128;
+constexpr size_t kMaxRecordTriggerJsonBytes = 128;
 constexpr uint32_t kPowerActionDelayMs = 200;
 constexpr uint32_t kShutdownSleepDelayMs = 100;
 PendingCmd g_pending[kPendingCmdCap];
@@ -113,11 +119,14 @@ portMUX_TYPE g_labelMux = portMUX_INITIALIZER_UNLOCKED;
 portMUX_TYPE g_wifiMux = portMUX_INITIALIZER_UNLOCKED;
 portMUX_TYPE g_powerMux = portMUX_INITIALIZER_UNLOCKED;
 portMUX_TYPE g_txBodyMux = portMUX_INITIALIZER_UNLOCKED;
+portMUX_TYPE g_recordTriggerBodyMux = portMUX_INITIALIZER_UNLOCKED;
 char g_commonSignalBody[kMaxCommonSignalsJsonBytes] = {};
 char g_wifiBody[kMaxWifiJsonBytes + 1] = {};
 char g_txBody[kMaxTxJsonBytes + 1] = {};
 char g_replayBody[kMaxReplayJsonBytes + 1] = {};
+char g_recordTriggerBody[kMaxRecordTriggerJsonBytes + 1] = {};
 TxBodyBusyState g_txBodyState;
+TxBodyBusyState g_recordTriggerBodyState;
 AnalyzerWifiCredentials g_pendingWifi;
 volatile bool g_pendingWifiValid = false;
 
@@ -472,27 +481,57 @@ void markDirty(uint8_t channel, uint32_t id)
         g_dirty[key >> 3] |= static_cast<uint8_t>(1u << (key & 7));
 }
 
+bool takeBodyBuffer(TxBodyBusyState &state, portMUX_TYPE &mux, AsyncWebServerRequest *request, uint32_t nowMs)
+{
+    portENTER_CRITICAL(&mux);
+    const bool acquired = analyzerWebTryAcquireTxBody(state, request, nowMs);
+    portEXIT_CRITICAL(&mux);
+    return acquired;
+}
+
+bool bodyBufferIsOwner(TxBodyBusyState &state, portMUX_TYPE &mux, AsyncWebServerRequest *request)
+{
+    portENTER_CRITICAL(&mux);
+    const bool isOwner = analyzerWebTxBodyIsOwner(state, request);
+    portEXIT_CRITICAL(&mux);
+    return isOwner;
+}
+
+void releaseBodyBuffer(TxBodyBusyState &state, portMUX_TYPE &mux, AsyncWebServerRequest *request)
+{
+    portENTER_CRITICAL(&mux);
+    analyzerWebReleaseTxBody(state, request);
+    portEXIT_CRITICAL(&mux);
+}
+
 bool takeTxBodyBuffer(AsyncWebServerRequest *request, uint32_t nowMs)
 {
-    portENTER_CRITICAL(&g_txBodyMux);
-    const bool acquired = analyzerWebTryAcquireTxBody(g_txBodyState, request, nowMs);
-    portEXIT_CRITICAL(&g_txBodyMux);
-    return acquired;
+    return takeBodyBuffer(g_txBodyState, g_txBodyMux, request, nowMs);
 }
 
 bool txBodyBufferIsOwner(AsyncWebServerRequest *request)
 {
-    portENTER_CRITICAL(&g_txBodyMux);
-    const bool isOwner = analyzerWebTxBodyIsOwner(g_txBodyState, request);
-    portEXIT_CRITICAL(&g_txBodyMux);
-    return isOwner;
+    return bodyBufferIsOwner(g_txBodyState, g_txBodyMux, request);
 }
 
 void releaseTxBodyBuffer(AsyncWebServerRequest *request)
 {
-    portENTER_CRITICAL(&g_txBodyMux);
-    analyzerWebReleaseTxBody(g_txBodyState, request);
-    portEXIT_CRITICAL(&g_txBodyMux);
+    releaseBodyBuffer(g_txBodyState, g_txBodyMux, request);
+}
+
+bool takeRecordTriggerBodyBuffer(AsyncWebServerRequest *request, uint32_t nowMs)
+{
+    return takeBodyBuffer(g_recordTriggerBodyState, g_recordTriggerBodyMux, request, nowMs);
+}
+
+bool recordTriggerBodyBufferIsOwner(AsyncWebServerRequest *request)
+{
+    return bodyBufferIsOwner(g_recordTriggerBodyState, g_recordTriggerBodyMux, request);
+}
+
+void releaseRecordTriggerBodyBuffer(AsyncWebServerRequest *request)
+{
+    releaseBodyBuffer(g_recordTriggerBodyState, g_recordTriggerBodyMux, request);
 }
 
 bool enqueuePendingCommand(const PendingCmd &cmd)
@@ -713,6 +752,30 @@ void processPendingCommand(const PendingCmd &cmd)
             Serial.println(result == ReplayStopResult::Ok ? "[replay] stop ok" : "[replay] stop not_running");
         }
         break;
+    case PendingCmdType::RecordTriggerArm:
+        if (!g_recordTrigger)
+        {
+            Serial.println("[record-trigger] arm failed: recorder_unavailable");
+            break;
+        }
+        {
+            const RecordTriggerArmResult result = g_recordTrigger->arm(cmd.record_trigger_config);
+            char msg[96];
+            snprintf(msg, sizeof(msg), "[record-trigger] arm %s", result == RecordTriggerArmResult::Ok ? "ok" : analyzerWebRecordTriggerArmError(result));
+            Serial.println(msg);
+        }
+        break;
+    case PendingCmdType::RecordTriggerDisarm:
+        if (g_recordTrigger)
+        {
+            g_recordTrigger->disarm();
+            Serial.println("[record-trigger] disarm ok");
+        }
+        else
+        {
+            Serial.println("[record-trigger] disarm ignored: recorder_unavailable");
+        }
+        break;
     }
 }
 
@@ -849,7 +912,7 @@ void onWsEvent(AsyncWebSocket *, AsyncWebSocketClient *, AwsEventType type, void
 
 void drainQueueIntoTable()
 {
-    if (!g_queue || !g_table)
+    if (!g_queue)
         return;
 
     CapturedFrame cap;
@@ -863,10 +926,15 @@ void drainQueueIntoTable()
             g_pretrigger->push(cap);
         if (g_signals)
             g_signals->push(cap);
+        if (g_table && g_recordTrigger)
+            g_recordTrigger->observe(cap);
         if (g_recorder && g_recorder->active())
             g_recorder->push(cap);
-        g_table->update(cap);
-        markDirty(cap.channel, cap.id);
+        if (g_table)
+        {
+            g_table->update(cap);
+            markDirty(cap.channel, cap.id);
+        }
     }
 }
 
@@ -951,7 +1019,8 @@ void pushBusStats()
 void analyzerWebSetContext(FrameQueue *queue, IdTable *table, BusStatsTracker *stats,
                            PretriggerBuffer *pretrigger, SnapshotStore *snapshots, LabelStore *labels,
                            WatchedSignalWindow *signals, CommonSignalStore *common_signals,
-                           Recorder *recorder, TxService *tx_service, ReplayService *replay_service)
+                           Recorder *recorder, TxService *tx_service, ReplayService *replay_service,
+                           RecordTriggerService *record_trigger)
 {
     g_queue = queue;
     g_table = table;
@@ -964,6 +1033,7 @@ void analyzerWebSetContext(FrameQueue *queue, IdTable *table, BusStatsTracker *s
     g_recorder = recorder;
     g_txService = tx_service;
     g_replayService = replay_service;
+    g_recordTrigger = record_trigger;
 }
 
 void analyzerWebBegin()
@@ -990,6 +1060,19 @@ void analyzerWebBegin()
         out += ",\"replay_sent\":" + String(g_replayService ? static_cast<uint32_t>(g_replayService->sent()) : 0);
         out += ",\"replay_error\":\"";
         out += g_replayService ? analyzerWebReplayError(g_replayService->lastStartResult(), g_replayService->lastTxResult()) : "";
+        out += "\"";
+        out += ",\"record_trigger_state\":\"";
+        out += g_recordTrigger ? analyzerWebRecordTriggerStateString(g_recordTrigger->state()) : "idle";
+        out += "\"";
+        out += ",\"record_trigger_mode\":\"";
+        out += g_recordTrigger ? analyzerWebRecordTriggerModeString(g_recordTrigger->mode()) : "disabled";
+        out += "\"";
+        out += ",\"record_trigger_channel\":\"";
+        out += g_recordTrigger ? analyzerWebRecordTriggerChannelString(g_recordTrigger->channel()) : "A";
+        out += "\"";
+        out += ",\"record_trigger_id\":" + String(g_recordTrigger ? g_recordTrigger->id() : 0);
+        out += ",\"record_trigger_error\":\"";
+        out += (g_recordTrigger && g_recordTrigger->error()) ? g_recordTrigger->error() : "";
         out += "\"";
         out += "}";
         request->send(200, "application/json", out);
@@ -1113,6 +1196,67 @@ void analyzerWebBegin()
     server.on("/api/replay/stop", HTTP_POST, [](AsyncWebServerRequest *request) {
         PendingCmd pending;
         pending.type = PendingCmdType::ReplayStop;
+        if (!enqueuePendingCommand(pending))
+        {
+            request->send(503, "application/json", "{\"ok\":false,\"error\":\"queue_full\"}");
+            return;
+        }
+        request->send(200, "application/json", analyzerWebTxAcceptedJson());
+    });
+
+    server.on("/api/record/trigger/arm", HTTP_POST,
+              [](AsyncWebServerRequest *) {},
+              nullptr,
+              [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+                  if (index == 0 && !takeRecordTriggerBodyBuffer(request, millis()))
+                  {
+                      request->send(analyzerWebTxBodyBusyStatus(), "application/json", "{\"ok\":false,\"error\":\"busy\"}");
+                      return;
+                  }
+
+                  if (!recordTriggerBodyBufferIsOwner(request) || !analyzerWebBodyChunkIsValid(index, len, total, kMaxRecordTriggerJsonBytes))
+                  {
+                      releaseRecordTriggerBodyBuffer(request);
+                      request->send(400, "application/json", analyzerWebBadRequestJson());
+                      return;
+                  }
+
+                  memcpy(g_recordTriggerBody + index, data, len);
+                  if (!analyzerWebBodyChunkCompletes(index, len, total))
+                      return;
+                  g_recordTriggerBody[total] = '\0';
+
+                  JsonDocument doc;
+                  if (deserializeJson(doc, g_recordTriggerBody, total))
+                  {
+                      releaseRecordTriggerBodyBuffer(request);
+                      request->send(400, "application/json", analyzerWebBadRequestJson());
+                      return;
+                  }
+
+                  PendingCmd pending;
+                  pending.type = PendingCmdType::RecordTriggerArm;
+                  if (!parseRecordTriggerArmRequest(doc, pending.record_trigger_config))
+                  {
+                      releaseRecordTriggerBodyBuffer(request);
+                      request->send(400, "application/json", analyzerWebBadRequestJson());
+                      return;
+                  }
+
+                  if (!enqueuePendingCommand(pending))
+                  {
+                      releaseRecordTriggerBodyBuffer(request);
+                      request->send(503, "application/json", "{\"ok\":false,\"error\":\"queue_full\"}");
+                      return;
+                  }
+
+                  releaseRecordTriggerBodyBuffer(request);
+                  request->send(200, "application/json", analyzerWebTxAcceptedJson());
+              });
+
+    server.on("/api/record/trigger/disarm", HTTP_POST, [](AsyncWebServerRequest *request) {
+        PendingCmd pending;
+        pending.type = PendingCmdType::RecordTriggerDisarm;
         if (!enqueuePendingCommand(pending))
         {
             request->send(503, "application/json", "{\"ok\":false,\"error\":\"queue_full\"}");
@@ -1287,6 +1431,35 @@ void analyzerWebBegin()
                 return recordCsvFill(reinterpret_cast<char *>(buffer), maxLen, *g_recorder, total, *cursor);
             });
         response->addHeader("Content-Disposition", "attachment; filename=\"can-record.csv\"");
+        request->send(response);
+    });
+
+    server.on("/api/record/download.asc", HTTP_GET, [](AsyncWebServerRequest *request) {
+        if (!g_recorder)
+        {
+            request->send(404, "text/plain", "no recording");
+            return;
+        }
+        if (g_recorder->active())
+        {
+            request->send(409, "text/plain", "stop recording first");
+            return;
+        }
+        if (g_recorder->count() == 0)
+        {
+            request->send(404, "text/plain", "no recording");
+            return;
+        }
+        auto cursor = std::make_shared<RecordAscCursor>();
+        const size_t total = g_recorder->count();
+        AsyncWebServerResponse *response = request->beginChunkedResponse(
+            "text/plain",
+            [cursor, total](uint8_t *buffer, size_t maxLen, size_t) -> size_t {
+                if (!g_recorder || g_recorder->active())
+                    return 0;
+                return recordAscFill(reinterpret_cast<char *>(buffer), maxLen, *g_recorder, total, *cursor);
+            });
+        response->addHeader("Content-Disposition", "attachment; filename=\"can-record.asc\"");
         request->send(response);
     });
 

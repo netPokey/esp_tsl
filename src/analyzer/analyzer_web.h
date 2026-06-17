@@ -2,6 +2,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#if !defined(NATIVE_BUILD)
+#include <ArduinoJson.h>
+#endif
 #include "analyzer/bus_stats.h"
 #include "analyzer/frame_queue.h"
 #include "analyzer/id_table.h"
@@ -9,6 +12,7 @@
 #include "analyzer/label_store.h"
 #include "analyzer/pretrigger_buffer.h"
 #include "analyzer/recorder.h"
+#include "analyzer/record_trigger.h"
 #include "analyzer/replay_service.h"
 #include "analyzer/signal_window.h"
 #include "analyzer/snapshot_store.h"
@@ -269,6 +273,144 @@ inline bool analyzerWebParseReplayTarget(const char *text, ReplayTarget &target)
     return false;
 }
 
+inline bool analyzerWebParseRecordTriggerMode(const char *text, RecordTriggerMode &mode)
+{
+    if (!text)
+        return false;
+    if (strcmp(text, "new_id") == 0)
+    {
+        mode = RecordTriggerMode::NewId;
+        return true;
+    }
+    if (strcmp(text, "id_change") == 0)
+    {
+        mode = RecordTriggerMode::IdChange;
+        return true;
+    }
+    if (strcmp(text, "any_change") == 0)
+    {
+        mode = RecordTriggerMode::AnyChange;
+        return true;
+    }
+    return false;
+}
+
+inline const char *analyzerWebRecordTriggerChannelString(uint8_t channel)
+{
+    if (channel == 0)
+        return "A";
+    if (channel == 1)
+        return "B";
+    return "?";
+}
+
+inline const char *analyzerWebRecordTriggerStateString(RecordTriggerState state)
+{
+    switch (state)
+    {
+    case RecordTriggerState::Idle:
+        return "idle";
+    case RecordTriggerState::Armed:
+        return "armed";
+    case RecordTriggerState::Triggered:
+        return "triggered";
+    case RecordTriggerState::Failed:
+        return "failed";
+    }
+    return "failed";
+}
+
+inline const char *analyzerWebRecordTriggerModeString(RecordTriggerMode mode)
+{
+    switch (mode)
+    {
+    case RecordTriggerMode::Disabled:
+        return "disabled";
+    case RecordTriggerMode::NewId:
+        return "new_id";
+    case RecordTriggerMode::IdChange:
+        return "id_change";
+    case RecordTriggerMode::AnyChange:
+        return "any_change";
+    }
+    return "disabled";
+}
+
+inline const char *analyzerWebRecordTriggerArmError(RecordTriggerArmResult result)
+{
+    switch (result)
+    {
+    case RecordTriggerArmResult::Ok:
+        return "";
+    case RecordTriggerArmResult::RecorderUnavailable:
+        return "recorder_unavailable";
+    case RecordTriggerArmResult::AlreadyRecording:
+        return "already_recording";
+    case RecordTriggerArmResult::ReplayRunning:
+        return "replay_running";
+    case RecordTriggerArmResult::InvalidTarget:
+        return "invalid_target";
+    }
+    return "invalid_target";
+}
+
+inline bool analyzerWebParseRecordTriggerArmFields(const char *mode_text,
+                                                   bool ch_is_string, const char *ch_text,
+                                                   bool id_is_int, int id_value,
+                                                   bool id_is_string, const char *id_text,
+                                                   RecordTriggerConfig &config)
+{
+    RecordTriggerMode mode = RecordTriggerMode::Disabled;
+    if (!analyzerWebParseRecordTriggerMode(mode_text, mode))
+        return false;
+
+    if (mode == RecordTriggerMode::NewId || mode == RecordTriggerMode::AnyChange)
+    {
+        config.mode = mode;
+        config.channel = 0;
+        config.id = 0;
+        return true;
+    }
+
+    uint8_t channel = 0;
+    if (!ch_is_string || !analyzerWebParseChannelToken(ch_text, channel))
+        return false;
+
+    uint32_t id = 0;
+    if (id_is_int)
+    {
+        if (!analyzerWebAcceptTxJsonIdInt(id_value, id))
+            return false;
+    }
+    else if (id_is_string)
+    {
+        if (!analyzerWebParseTxId(id_text, id))
+            return false;
+    }
+    else
+    {
+        return false;
+    }
+
+    config.mode = mode;
+    config.channel = channel;
+    config.id = static_cast<uint16_t>(id);
+    return true;
+}
+
+#if !defined(NATIVE_BUILD)
+inline bool parseRecordTriggerArmRequest(JsonDocument &doc, RecordTriggerConfig &config)
+{
+    const bool id_is_int = doc["id"].is<int>();
+    const bool id_is_string = doc["id"].is<const char *>();
+    return analyzerWebParseRecordTriggerArmFields(doc["mode"] | nullptr,
+                                                  doc["ch"].is<const char *>(), doc["ch"] | nullptr,
+                                                  id_is_int, id_is_int ? doc["id"].as<int>() : 0,
+                                                  id_is_string, id_is_string ? doc["id"].as<const char *>() : nullptr,
+                                                  config);
+}
+#endif
+
 inline const char *analyzerWebReplayStateString(ReplayState state)
 {
     switch (state)
@@ -388,6 +530,42 @@ inline bool analyzerWebParseReplayTargetForTest(const char *text, ReplayTarget &
     return analyzerWebParseReplayTarget(text, target);
 }
 
+inline bool analyzerWebParseRecordTriggerModeForTest(const char *text, RecordTriggerMode &mode)
+{
+    return analyzerWebParseRecordTriggerMode(text, mode);
+}
+
+inline const char *analyzerWebRecordTriggerChannelStringForTest(uint8_t channel)
+{
+    return analyzerWebRecordTriggerChannelString(channel);
+}
+
+inline const char *analyzerWebRecordTriggerStateStringForTest(RecordTriggerState state)
+{
+    return analyzerWebRecordTriggerStateString(state);
+}
+
+inline const char *analyzerWebRecordTriggerModeStringForTest(RecordTriggerMode mode)
+{
+    return analyzerWebRecordTriggerModeString(mode);
+}
+
+inline const char *analyzerWebRecordTriggerArmErrorForTest(RecordTriggerArmResult result)
+{
+    return analyzerWebRecordTriggerArmError(result);
+}
+
+inline bool analyzerWebParseRecordTriggerArmFieldsForTest(const char *mode_text,
+                                                          bool ch_is_string, const char *ch_text,
+                                                          bool id_is_int, int id_value,
+                                                          bool id_is_string, const char *id_text,
+                                                          RecordTriggerConfig &config)
+{
+    return analyzerWebParseRecordTriggerArmFields(mode_text, ch_is_string, ch_text,
+                                                  id_is_int, id_value, id_is_string, id_text,
+                                                  config);
+}
+
 inline const char *analyzerWebReplayStateStringForTest(ReplayState state)
 {
     return analyzerWebReplayStateString(state);
@@ -442,6 +620,7 @@ inline void analyzerWebReleaseTxBodyForTest(TxBodyBusyState &state, const void *
 void analyzerWebSetContext(FrameQueue *queue, IdTable *table, BusStatsTracker *stats,
                            PretriggerBuffer *pretrigger, SnapshotStore *snapshots, LabelStore *labels,
                            WatchedSignalWindow *signals, CommonSignalStore *common_signals,
-                           Recorder *recorder, TxService *tx_service, ReplayService *replay_service = nullptr);
+                           Recorder *recorder, TxService *tx_service, ReplayService *replay_service = nullptr,
+                           RecordTriggerService *record_trigger = nullptr);
 void analyzerWebBegin();
 void analyzerWebLoop();

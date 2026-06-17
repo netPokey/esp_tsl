@@ -79,6 +79,9 @@ tr.baselined { opacity: 0.45; }
   #wifi-status { grid-column: span 1; }
 }
 .record-controls { align-items: center; }
+.trigger-controls { align-items: center; }
+.trigger-controls input { width: 76px; }
+#trigger-status { min-width: 280px; color: #ddd; }
 .record-link {
   padding: 4px 10px;
   border: 1px solid #4a4a4a;

@@ -76,6 +76,7 @@
     <button id="record-start-btn">录制开始</button>
     <button id="record-stop-btn" disabled>录制停止</button>
     <a id="record-download" class="record-link disabled" href="/api/record/download" download>下载 CSV</a>
+    <a id="record-download-asc" class="record-link disabled" href="/api/record/download.asc" download>下载 ASC</a>
     <span id="record-status">录制：空闲</span>
     <label>回放目标
       <select id="replay-target">
@@ -87,6 +88,25 @@
     <button id="replay-start-btn" disabled>回放开始</button>
     <button id="replay-stop-btn" disabled>回放停止</button>
     <span id="replay-status">回放：空闲</span>
+  </div>
+  <div class="controls trigger-controls">
+    <label>触发模式
+      <select id="trigger-mode">
+        <option value="new_id">新 ID</option>
+        <option value="id_change">指定 ID 变化</option>
+        <option value="any_change">任意变化</option>
+      </select>
+    </label>
+    <label>通道
+      <select id="trigger-channel">
+        <option value="A">CAN_A</option>
+        <option value="B">CAN_B</option>
+      </select>
+    </label>
+    <label>ID <input id="trigger-id" type="text" value="0x000" inputmode="text"/></label>
+    <button id="trigger-arm-btn">触发录制布防</button>
+    <button id="trigger-disarm-btn" disabled>触发录制撤防</button>
+    <span id="trigger-status">触发录制：空闲</span>
   </div>
   <div class="controls">
     <label>进制 <select id="base-select"><option value="hex">HEX</option><option value="dec">DEC</option><option value="bin">BIN</option><option value="ascii">ASCII</option></select></label>

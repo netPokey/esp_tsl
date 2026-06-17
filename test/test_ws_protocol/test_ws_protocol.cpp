@@ -630,6 +630,100 @@ void test_replay_error_prefers_tx_failure_then_start_failure_then_empty()
     TEST_ASSERT_EQUAL_STRING("tx_disabled", analyzerWebReplayErrorForTest(ReplayStartResult::Busy, TxSendResult::TxDisabled));
 }
 
+void test_record_trigger_mode_parser_accepts_only_exact_tokens()
+{
+    RecordTriggerMode mode = RecordTriggerMode::Disabled;
+    TEST_ASSERT_TRUE(analyzerWebParseRecordTriggerModeForTest("new_id", mode));
+    TEST_ASSERT_TRUE(mode == RecordTriggerMode::NewId);
+    TEST_ASSERT_TRUE(analyzerWebParseRecordTriggerModeForTest("id_change", mode));
+    TEST_ASSERT_TRUE(mode == RecordTriggerMode::IdChange);
+    TEST_ASSERT_TRUE(analyzerWebParseRecordTriggerModeForTest("any_change", mode));
+    TEST_ASSERT_TRUE(mode == RecordTriggerMode::AnyChange);
+
+    mode = RecordTriggerMode::NewId;
+    TEST_ASSERT_FALSE(analyzerWebParseRecordTriggerModeForTest(nullptr, mode));
+    TEST_ASSERT_TRUE(mode == RecordTriggerMode::NewId);
+    TEST_ASSERT_FALSE(analyzerWebParseRecordTriggerModeForTest("", mode));
+    TEST_ASSERT_FALSE(analyzerWebParseRecordTriggerModeForTest("disabled", mode));
+    TEST_ASSERT_FALSE(analyzerWebParseRecordTriggerModeForTest("New_Id", mode));
+    TEST_ASSERT_FALSE(analyzerWebParseRecordTriggerModeForTest("new-id", mode));
+    TEST_ASSERT_FALSE(analyzerWebParseRecordTriggerModeForTest(" any_change", mode));
+}
+
+void test_record_trigger_channel_string_is_status_canonical()
+{
+    TEST_ASSERT_EQUAL_STRING("A", analyzerWebRecordTriggerChannelStringForTest(0));
+    TEST_ASSERT_EQUAL_STRING("B", analyzerWebRecordTriggerChannelStringForTest(1));
+    TEST_ASSERT_EQUAL_STRING("?", analyzerWebRecordTriggerChannelStringForTest(2));
+}
+
+void test_record_trigger_state_mode_and_arm_error_strings_are_canonical()
+{
+    TEST_ASSERT_EQUAL_STRING("idle", analyzerWebRecordTriggerStateStringForTest(RecordTriggerState::Idle));
+    TEST_ASSERT_EQUAL_STRING("armed", analyzerWebRecordTriggerStateStringForTest(RecordTriggerState::Armed));
+    TEST_ASSERT_EQUAL_STRING("triggered", analyzerWebRecordTriggerStateStringForTest(RecordTriggerState::Triggered));
+    TEST_ASSERT_EQUAL_STRING("failed", analyzerWebRecordTriggerStateStringForTest(RecordTriggerState::Failed));
+
+    TEST_ASSERT_EQUAL_STRING("disabled", analyzerWebRecordTriggerModeStringForTest(RecordTriggerMode::Disabled));
+    TEST_ASSERT_EQUAL_STRING("new_id", analyzerWebRecordTriggerModeStringForTest(RecordTriggerMode::NewId));
+    TEST_ASSERT_EQUAL_STRING("id_change", analyzerWebRecordTriggerModeStringForTest(RecordTriggerMode::IdChange));
+    TEST_ASSERT_EQUAL_STRING("any_change", analyzerWebRecordTriggerModeStringForTest(RecordTriggerMode::AnyChange));
+
+    TEST_ASSERT_EQUAL_STRING("", analyzerWebRecordTriggerArmErrorForTest(RecordTriggerArmResult::Ok));
+    TEST_ASSERT_EQUAL_STRING("recorder_unavailable", analyzerWebRecordTriggerArmErrorForTest(RecordTriggerArmResult::RecorderUnavailable));
+    TEST_ASSERT_EQUAL_STRING("already_recording", analyzerWebRecordTriggerArmErrorForTest(RecordTriggerArmResult::AlreadyRecording));
+    TEST_ASSERT_EQUAL_STRING("replay_running", analyzerWebRecordTriggerArmErrorForTest(RecordTriggerArmResult::ReplayRunning));
+    TEST_ASSERT_EQUAL_STRING("invalid_target", analyzerWebRecordTriggerArmErrorForTest(RecordTriggerArmResult::InvalidTarget));
+}
+
+void test_record_trigger_arm_parser_accepts_modes_that_do_not_need_target()
+{
+    RecordTriggerConfig config{};
+
+    config.channel = 7;
+    config.id = 0x777;
+    TEST_ASSERT_TRUE(analyzerWebParseRecordTriggerArmFieldsForTest("new_id", false, nullptr, false, 0, false, nullptr, config));
+    TEST_ASSERT_TRUE(config.mode == RecordTriggerMode::NewId);
+    TEST_ASSERT_EQUAL_UINT8(0, config.channel);
+    TEST_ASSERT_EQUAL_UINT16(0, config.id);
+
+    config.channel = 7;
+    config.id = 0x777;
+    TEST_ASSERT_TRUE(analyzerWebParseRecordTriggerArmFieldsForTest("any_change", false, nullptr, false, 0, true, "not_an_id", config));
+    TEST_ASSERT_TRUE(config.mode == RecordTriggerMode::AnyChange);
+    TEST_ASSERT_EQUAL_UINT8(0, config.channel);
+    TEST_ASSERT_EQUAL_UINT16(0, config.id);
+}
+
+void test_record_trigger_arm_parser_requires_target_for_id_change()
+{
+    RecordTriggerConfig config{};
+
+    TEST_ASSERT_TRUE(analyzerWebParseRecordTriggerArmFieldsForTest("id_change", true, "A", true, 291, false, nullptr, config));
+    TEST_ASSERT_TRUE(config.mode == RecordTriggerMode::IdChange);
+    TEST_ASSERT_EQUAL_UINT8(0, config.channel);
+    TEST_ASSERT_EQUAL_UINT16(0x123, config.id);
+
+    TEST_ASSERT_TRUE(analyzerWebParseRecordTriggerArmFieldsForTest("id_change", true, "B", false, 0, true, "0x7FF", config));
+    TEST_ASSERT_TRUE(config.mode == RecordTriggerMode::IdChange);
+    TEST_ASSERT_EQUAL_UINT8(1, config.channel);
+    TEST_ASSERT_EQUAL_UINT16(0x7FF, config.id);
+
+    TEST_ASSERT_FALSE(analyzerWebParseRecordTriggerArmFieldsForTest("id_change", false, nullptr, false, 0, false, nullptr, config));
+    TEST_ASSERT_FALSE(analyzerWebParseRecordTriggerArmFieldsForTest("id_change", true, "C", true, 291, false, nullptr, config));
+}
+
+void test_record_trigger_arm_parser_rejects_malformed_fields()
+{
+    RecordTriggerConfig config{};
+
+    TEST_ASSERT_FALSE(analyzerWebParseRecordTriggerArmFieldsForTest(nullptr, false, nullptr, false, 0, false, nullptr, config));
+    TEST_ASSERT_FALSE(analyzerWebParseRecordTriggerArmFieldsForTest("disabled", false, nullptr, false, 0, false, nullptr, config));
+    TEST_ASSERT_FALSE(analyzerWebParseRecordTriggerArmFieldsForTest("id_change", true, "A", false, 0, true, "0x800", config));
+    TEST_ASSERT_FALSE(analyzerWebParseRecordTriggerArmFieldsForTest("id_change", true, "A", false, 0, false, nullptr, config));
+    TEST_ASSERT_FALSE(analyzerWebParseRecordTriggerArmFieldsForTest("id_change", true, "A", true, 2048, false, nullptr, config));
+}
+
 int main(int, char **)
 {
     UNITY_BEGIN();
@@ -669,5 +763,11 @@ int main(int, char **)
     RUN_TEST(test_replay_state_strings_are_canonical);
     RUN_TEST(test_replay_start_error_strings_are_canonical);
     RUN_TEST(test_replay_error_prefers_tx_failure_then_start_failure_then_empty);
+    RUN_TEST(test_record_trigger_mode_parser_accepts_only_exact_tokens);
+    RUN_TEST(test_record_trigger_channel_string_is_status_canonical);
+    RUN_TEST(test_record_trigger_state_mode_and_arm_error_strings_are_canonical);
+    RUN_TEST(test_record_trigger_arm_parser_accepts_modes_that_do_not_need_target);
+    RUN_TEST(test_record_trigger_arm_parser_requires_target_for_id_change);
+    RUN_TEST(test_record_trigger_arm_parser_rejects_malformed_fields);
     return UNITY_END();
 }

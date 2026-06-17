@@ -31,7 +31,14 @@ const p3Status = document.getElementById('p3-status');
 const recordStartBtn = document.getElementById('record-start-btn');
 const recordStopBtn = document.getElementById('record-stop-btn');
 const recordDownload = document.getElementById('record-download');
+const recordDownloadAsc = document.getElementById('record-download-asc');
 const recordStatusEl = document.getElementById('record-status');
+const triggerMode = document.getElementById('trigger-mode');
+const triggerChannel = document.getElementById('trigger-channel');
+const triggerId = document.getElementById('trigger-id');
+const triggerArmBtn = document.getElementById('trigger-arm-btn');
+const triggerDisarmBtn = document.getElementById('trigger-disarm-btn');
+const triggerStatusEl = document.getElementById('trigger-status');
 const replayTarget = document.getElementById('replay-target');
 const replayStartBtn = document.getElementById('replay-start-btn');
 const replayStopBtn = document.getElementById('replay-stop-btn');
@@ -83,6 +90,8 @@ let signalHints = [];
 let signalSpecs = [];
 let ws = null;
 let txState = { master: false, a: false, b: false, onlineA: false, onlineB: false };
+let triggerPendingAction = '';
+let triggerPendingText = '';
 
 function hex(n, w) { return n.toString(16).toUpperCase().padStart(w, '0'); }
 function printable(b) { return b >= 32 && b <= 126 ? String.fromCharCode(b) : '.'; }
@@ -125,6 +134,18 @@ function parseTxSendForm() {
   const data = [];
   for (let i = 0; i < dlc; i++) data.push(parseBoundedIntText(txByteInputs[i].value, 0xFF));
   return { ch, id, dlc, data };
+}
+
+function parseTriggerArmForm() {
+  const mode = triggerMode.value;
+  if (mode === 'new_id') return { mode: 'new_id' };
+  if (mode === 'any_change') return { mode: 'any_change' };
+  if (mode === 'id_change') {
+    const ch = triggerChannel.value === 'B' ? 'B' : 'A';
+    const id = parseBoundedIntText(triggerId.value, 0x7FF);
+    return { mode: 'id_change', ch, id };
+  }
+  throw new Error('请选择有效触发模式');
 }
 
 function updateTxSendButton() {
@@ -1039,6 +1060,56 @@ async function postDeviceAction(path, message, button) {
   }
 }
 
+async function postTriggerArm() {
+  let payload;
+  try {
+    payload = parseTriggerArmForm();
+  } catch (err) {
+    triggerStatusEl.textContent = `触发录制布防失败：${err.message || err}`;
+    return;
+  }
+
+  triggerArmBtn.disabled = true;
+  triggerStatusEl.textContent = '触发录制：布防请求提交中…';
+  try {
+    const r = await fetch('/api/record/trigger/arm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok || body.ok === false) throw new Error(body.error || `HTTP ${r.status}`);
+    triggerPendingAction = 'arm';
+    triggerPendingText = '触发录制：布防请求已提交，等待设备状态确认…';
+    triggerStatusEl.textContent = triggerPendingText;
+    setTimeout(refreshTxBanner, 250);
+  } catch (err) {
+    triggerPendingAction = '';
+    triggerPendingText = '';
+    triggerStatusEl.textContent = `触发录制布防失败：${err.message || err}`;
+    triggerArmBtn.disabled = false;
+  }
+}
+
+async function postTriggerDisarm() {
+  triggerDisarmBtn.disabled = true;
+  triggerStatusEl.textContent = '触发录制：撤防请求提交中…';
+  try {
+    const r = await fetch('/api/record/trigger/disarm', { method: 'POST' });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok || body.ok === false) throw new Error(body.error || `HTTP ${r.status}`);
+    triggerPendingAction = 'disarm';
+    triggerPendingText = '触发录制：撤防请求已提交，等待设备状态确认…';
+    triggerStatusEl.textContent = triggerPendingText;
+    setTimeout(refreshTxBanner, 250);
+  } catch (err) {
+    triggerPendingAction = '';
+    triggerPendingText = '';
+    triggerStatusEl.textContent = `触发录制撤防失败：${err.message || err}`;
+    triggerDisarmBtn.disabled = false;
+  }
+}
+
 async function refreshTxBanner() {
   try {
     const r = await fetch('/api/status');
@@ -1053,7 +1124,61 @@ async function refreshTxBanner() {
     paintTxState();
     paintRecordStatus(s);
     updateReplayControls(s);
+    updateTriggerControls(s);
   } catch (e) {}
+}
+
+function triggerModeLabel(mode) {
+  if (mode === 'new_id') return '新 ID';
+  if (mode === 'id_change') return '指定 ID 变化';
+  if (mode === 'any_change') return '任意变化';
+  return mode || '未知';
+}
+
+function triggerStateLabel(state) {
+  if (state === 'armed') return '已布防';
+  if (state === 'triggered') return '已触发';
+  if (state === 'failed') return '失败';
+  if (state === 'disarmed') return '已撤防';
+  return '空闲';
+}
+
+function updateTriggerModeInputs() {
+  const enabled = triggerMode.value === 'id_change';
+  triggerChannel.disabled = !enabled;
+  triggerId.disabled = !enabled;
+}
+
+function formatTriggerTarget(s) {
+  const mode = String(s.record_trigger_mode || '');
+  if (mode !== 'id_change') return '';
+  const ch = String(s.record_trigger_channel || '');
+  const id = Number(s.record_trigger_id);
+  if ((ch !== 'A' && ch !== 'B') || !Number.isInteger(id) || id < 0) return '';
+  return ` · 目标 ${ch} ${idText(id)}`;
+}
+
+function updateTriggerControls(s) {
+  const recording = !!s.recording;
+  const replayRunning = String(s.replay_state || 'idle') === 'running';
+  const triggerState = String(s.record_trigger_state || 'idle');
+  const triggerModeText = triggerModeLabel(String(s.record_trigger_mode || ''));
+  const triggerError = String(s.record_trigger_error || '');
+  const triggerBusy = triggerState === 'armed' || triggerState === 'triggered' || triggerState === 'failed';
+  if (triggerPendingAction === 'arm' && triggerBusy) {
+    triggerPendingAction = '';
+    triggerPendingText = '';
+  }
+  if (triggerPendingAction === 'disarm' && triggerState === 'idle') {
+    triggerPendingAction = '';
+    triggerPendingText = '';
+  }
+  updateTriggerModeInputs();
+  triggerArmBtn.disabled = recording || replayRunning || triggerBusy || !!triggerPendingAction;
+  triggerDisarmBtn.disabled = !!triggerPendingAction || !triggerBusy;
+  let text = `触发录制：${triggerStateLabel(triggerState)} · 模式 ${triggerModeText}${formatTriggerTarget(s)}`;
+  if (triggerError) text += ` · ${triggerError}`;
+  triggerStatusEl.textContent = triggerPendingText || text;
 }
 
 function replayTargetLabel(value) {
@@ -1101,6 +1226,7 @@ function paintRecordStatus(s) {
   }
   const canDownload = !recording && count > 0;
   recordDownload.classList.toggle('disabled', !canDownload);
+  recordDownloadAsc.classList.toggle('disabled', !canDownload);
 }
 
 async function loadLabels() {
@@ -1218,8 +1344,14 @@ replayStopBtn.onclick = async () => {
     if (submitted) replayStatusEl.textContent = '回放：停止请求已提交，等待设备处理…';
   }
 };
+triggerMode.onchange = updateTriggerModeInputs;
+triggerArmBtn.onclick = postTriggerArm;
+triggerDisarmBtn.onclick = postTriggerDisarm;
 recordDownload.addEventListener('click', (e) => {
   if (recordDownload.classList.contains('disabled')) e.preventDefault();
+});
+recordDownloadAsc.addEventListener('click', (e) => {
+  if (recordDownloadAsc.classList.contains('disabled')) e.preventDefault();
 });
 baselineBtn.onclick = () => {
   p3Status.textContent = '已请求设置基线';
@@ -1268,6 +1400,7 @@ for (const el of [channelFilter, idFilter, rangeFrom, rangeTo, searchBox, whitel
 }
 
 renderSignalWorkbench();
+updateTriggerModeInputs();
 connect();
 loadLabels();
 refreshWifiStatus();
