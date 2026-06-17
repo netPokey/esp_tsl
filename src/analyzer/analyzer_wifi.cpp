@@ -13,7 +13,7 @@ constexpr const char *kPrefsNs = "analyzer_wifi";
 constexpr const char *kPrefsSsid = "ssid";
 constexpr const char *kPrefsPass = "pass";
 constexpr const char *kApSsid = "CAN-Analyzer";
-constexpr const char *kApPass = "analyzer1234";
+constexpr const char *kApPass = "1234567890";
 constexpr unsigned long kStaTimeoutMs = 10000;
 bool trySta(const char *ssid, const char *pass)
 {

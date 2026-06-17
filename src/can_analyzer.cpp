@@ -19,6 +19,7 @@
 #include "analyzer/signal_window.h"
 #include "analyzer/snapshot_store.h"
 #include "analyzer/tx_service.h"
+#include "analyzer/tx_mode_sync.h"
 #include "can_helpers.h"
 #include "drivers/mcp2515_driver.h"
 #include "drivers/twai_driver.h"
@@ -57,13 +58,11 @@ ReplayService g_replayService;
 std::unique_ptr<MCP2515Driver> g_canA;
 std::unique_ptr<TWAIDriver> g_canB;
 TxService g_txService;
+TxModeSync g_txModeSync;
 
 void syncTxMode()
 {
-    if (g_canA && isAnalyzerChannelOnline(0))
-        g_canA->setBusMode(shouldAllowAnalyzerChannelTx(0) ? CanBusMode::Normal : CanBusMode::ListenOnly);
-    if (g_canB && isAnalyzerChannelOnline(1))
-        g_canB->setBusMode(shouldAllowAnalyzerChannelTx(1) ? CanBusMode::Normal : CanBusMode::ListenOnly);
+    g_txModeSync.sync(g_canA.get(), g_canB.get());
 }
 }
 
