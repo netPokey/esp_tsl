@@ -26,6 +26,8 @@ const idFilter = document.getElementById('id-filter');
 const rangeFrom = document.getElementById('range-from');
 const rangeTo = document.getElementById('range-to');
 const searchBox = document.getElementById('search-box');
+const focusMode = document.getElementById('focus-mode');
+const focusChangeThreshold = document.getElementById('focus-change-threshold');
 const whitelistOnly = document.getElementById('whitelist-only');
 const p3Status = document.getElementById('p3-status');
 const recordStartBtn = document.getElementById('record-start-btn');
@@ -82,11 +84,17 @@ const records = {};
 const labels = new Map();
 const hidden = new Set();
 const whitelist = new Set();
+const baselineCounts = new Map();
 let snapshotDiffRows = [];
 let pretriggerRows = [];
 let signalTarget = null;
 let signalSamples = [];
 let signalHints = [];
+let recordRenderQueued = false;
+let fullRecordRenderQueued = false;
+const dirtyRecordKeys = new Set();
+let snapshotRenderQueued = false;
+let pretriggerRenderQueued = false;
 let signalSpecs = [];
 let ws = null;
 let txState = { master: false, a: false, b: false, onlineA: false, onlineB: false };
@@ -223,11 +231,25 @@ function rowClass(score) {
   return 'activity-low';
 }
 
+function hasExplicitFilter() {
+  return channelFilter.value !== 'all' || idFilter.value.trim() || rangeFrom.value.trim() || rangeTo.value.trim() || searchBox.value.trim();
+}
+
+function isFocusCandidate(rec, key, isWhitelisted) {
+  if (!focusMode.checked || isWhitelisted || hasExplicitFilter()) return true;
+  if (!Number.isFinite(rec.changeScore)) return true;
+  if (!baselineCounts.has(key)) return true;
+  const baselineCount = baselineCounts.get(key) || 0;
+  const threshold = Math.max(1, Number(focusChangeThreshold.value) || 2);
+  return rec.changeScore > baselineCount + threshold;
+}
+
 function passesLocalFilters(rec) {
   const key = channelIdKey(rec.ch, rec.id);
   const isWhitelisted = whitelist.has(key);
   if (whitelistOnly.checked && !isWhitelisted) return false;
   if (!isWhitelisted && hidden.has(key)) return false;
+  if (!isFocusCandidate(rec, key, isWhitelisted)) return false;
   if (channelFilter.value === 'A' && rec.ch !== 0) return false;
   if (channelFilter.value === 'B' && rec.ch !== 1) return false;
   const exact = parseId(idFilter.value);
@@ -301,8 +323,12 @@ function ensureRows(rec) {
   tr.innerHTML = '<td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td>';
   const bit = document.createElement('tr');
   bit.className = 'bit-view hidden';
+  bit.dataset.manualHidden = '1';
   bit.innerHTML = '<td colspan="8"></td>';
-  tr.onclick = () => bit.classList.toggle('hidden');
+  tr.onclick = () => {
+    const hiddenNow = bit.classList.toggle('hidden');
+    bit.dataset.manualHidden = hiddenNow ? '1' : '0';
+  };
   tr.ondblclick = (ev) => { ev.stopPropagation(); editLabel(rec); };
   rows[key] = { tr, bit };
   tbody[rec.ch].appendChild(tr);
@@ -318,7 +344,11 @@ function paintRecord(rec) {
   tr.classList.toggle('hidden', hiddenRow);
   tr.classList.toggle('whitelisted', whitelist.has(channelIdKey(rec.ch, rec.id)));
   tr.classList.toggle('baselined', hidden.has(channelIdKey(rec.ch, rec.id)));
-  if (hiddenRow) pair.bit.classList.add('hidden');
+  if (hiddenRow || pair.bit.dataset.manualHidden !== '0') {
+    pair.bit.classList.add('hidden');
+  } else {
+    pair.bit.classList.remove('hidden');
+  }
 
   const c = tr.children;
   appendIdCell(c[0], rec);
@@ -335,7 +365,7 @@ function paintRecord(rec) {
 function sortTables() {
   for (const ch of [0, 1]) {
     const list = Object.values(records)
-      .filter(r => r.ch === ch)
+      .filter(r => r.ch === ch && !rowHidden(r))
       .sort((a, b) => sortSelect.value === 'activity' ? (b.changeScore - a.changeScore || a.id - b.id) : (a.id - b.id));
     for (const rec of list) {
       const pair = ensureRows(rec);
@@ -345,11 +375,50 @@ function sortTables() {
   }
 }
 
+function scheduleRecordRender(full = false) {
+  if (full) fullRecordRenderQueued = true;
+  if (recordRenderQueued) return;
+  recordRenderQueued = true;
+  requestAnimationFrame(() => {
+    recordRenderQueued = false;
+    if (fullRecordRenderQueued) {
+      fullRecordRenderQueued = false;
+      for (const rec of Object.values(records)) {
+        if (rows[rec.key] || !rowHidden(rec)) paintRecord(rec);
+      }
+    } else {
+      for (const key of dirtyRecordKeys) {
+        const rec = records[key];
+        if (rec && (rows[key] || !rowHidden(rec))) paintRecord(rec);
+      }
+    }
+    dirtyRecordKeys.clear();
+    sortTables();
+  });
+}
+
+function scheduleSnapshotRender() {
+  if (snapshotRenderQueued) return;
+  snapshotRenderQueued = true;
+  requestAnimationFrame(() => {
+    snapshotRenderQueued = false;
+    renderSnapshotDiffRows();
+  });
+}
+
+function schedulePretriggerRender() {
+  if (pretriggerRenderQueued) return;
+  pretriggerRenderQueued = true;
+  requestAnimationFrame(() => {
+    pretriggerRenderQueued = false;
+    renderPretriggerRows();
+  });
+}
+
 function repaintAll() {
-  for (const rec of Object.values(records)) paintRecord(rec);
-  sortTables();
-  renderSnapshotDiffRows();
-  renderPretriggerRows();
+  scheduleRecordRender(true);
+  scheduleSnapshotRender();
+  schedulePretriggerRender();
 }
 
 function toggleWhitelist(rec) {
@@ -363,6 +432,14 @@ function toggleWhitelist(rec) {
 function hideRecord(rec) {
   hidden.add(channelIdKey(rec.ch, rec.id));
   p3Status.textContent = `已隐藏=${hidden.size}`;
+  repaintAll();
+}
+
+function captureFocusBaseline() {
+  baselineCounts.clear();
+  for (const rec of Object.values(records)) baselineCounts.set(channelIdKey(rec.ch, rec.id), rec.changeScore);
+  focusMode.checked = true;
+  p3Status.textContent = `聚焦基线=${baselineCounts.size} 个 ID；仅显示新 ID、变化 ID、白名单或显式过滤范围`;
   repaintAll();
 }
 
@@ -804,9 +881,9 @@ function parseDelta(buf) {
     const key = recordKey(ch, id);
     const rec = { key, ch, id, dlc, data, byteAge, count: countRx, lastRx, deltaMs, periodMs, jitterMs, changeScore, flags };
     records[key] = rec;
-    paintRecord(rec);
+    dirtyRecordKeys.add(key);
   }
-  sortTables();
+  scheduleRecordRender();
 }
 
 function parseStats(buf) {
@@ -907,12 +984,12 @@ function renderPretriggerRows() {
 
 function clearSnapshotResults() {
   snapshotDiffRows = [];
-  renderSnapshotDiffRows();
+  scheduleSnapshotRender();
 }
 
 function clearPretriggerResults() {
   pretriggerRows = [];
-  renderPretriggerRows();
+  schedulePretriggerRender();
 }
 
 function parseDiff(buf, dv, count) {
@@ -928,7 +1005,7 @@ function parseDiff(buf, dv, count) {
     const dataB = Array.from(new Uint8Array(buf.slice(o, o + 8))); o += 8;
     snapshotDiffRows.push({ ch, id, kind, dlcA, dataA, dlcB, dataB });
   }
-  renderSnapshotDiffRows();
+  scheduleSnapshotRender();
 }
 
 function parsePretrigger(buf, dv, count) {
@@ -945,7 +1022,7 @@ function parsePretrigger(buf, dv, count) {
     const data = Array.from(new Uint8Array(buf.slice(o, o + 8))); o += 8;
     pretriggerRows.push({ ch, id, firstAgo, lastAgo, frames, changes, dlc, data });
   }
-  renderPretriggerRows();
+  schedulePretriggerRender();
 }
 
 
@@ -1354,7 +1431,7 @@ recordDownloadAsc.addEventListener('click', (e) => {
   if (recordDownloadAsc.classList.contains('disabled')) e.preventDefault();
 });
 baselineBtn.onclick = () => {
-  p3Status.textContent = '已请求设置基线';
+  captureFocusBaseline();
   sendCmd({ cmd: 'baseline' });
 };
 snapABtn.onclick = () => sendCmd({ cmd: 'snapshot', slot: 'A' });
@@ -1393,8 +1470,8 @@ signalSaveCommonBtn.onclick = saveCommonSignals;
 baseSelect.onchange = repaintAll;
 suppressStatic.onchange = repaintAll;
 staticSeconds.onchange = repaintAll;
-sortSelect.onchange = () => { repaintAll(); sortTables(); };
-for (const el of [channelFilter, idFilter, rangeFrom, rangeTo, searchBox, whitelistOnly]) {
+sortSelect.onchange = repaintAll;
+for (const el of [channelFilter, idFilter, rangeFrom, rangeTo, searchBox, focusMode, focusChangeThreshold, whitelistOnly]) {
   el.oninput = repaintAll;
   el.onchange = repaintAll;
 }
