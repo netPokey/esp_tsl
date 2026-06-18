@@ -97,9 +97,25 @@ let snapshotRenderQueued = false;
 let pretriggerRenderQueued = false;
 let signalSpecs = [];
 let ws = null;
+let _wsMsg = 0, _wsRec = 0;  
 let txState = { master: false, a: false, b: false, onlineA: false, onlineB: false };
 let triggerPendingAction = '';
 let triggerPendingText = '';
+
+/* ---------------------------------------------------------------------------
+ * [1] 顶层变量：加到 app.js 里其它 let/const 声明附近（比如 rows 定义之后）
+ * ------------------------------------------------------------------------- */
+let needSort = false;            // 有新行出现 / 排序条件变化时置 true
+let sortQueued = false;
+const lastOrder = { 0: [], 1: [] };   // 上次每通道的行顺序，用于差分
+ 
+function setText(node, value) {
+  const v = String(value);
+  if (node.textContent !== v) node.textContent = v;   // 不变则不写，省 reflow
+}
+ 
+
+
 
 function hex(n, w) { return n.toString(16).toUpperCase().padStart(w, '0'); }
 function printable(b) { return b >= 32 && b <= 126 ? String.fromCharCode(b) : '.'; }
@@ -240,8 +256,15 @@ function isFocusCandidate(rec, key, isWhitelisted) {
   if (!Number.isFinite(rec.changeScore)) return true;
   if (!baselineCounts.has(key)) return true;
   const baselineCount = baselineCounts.get(key) || 0;
-  const threshold = Math.max(1, Number(focusChangeThreshold.value) || 2);
-  return rec.changeScore > baselineCount + threshold;
+  const threshold = Math.max(1, Number(focusChangeThreshold.value) || 1);
+  return rec.changeScore >= baselineCount + threshold;
+}
+
+function focusRank(rec) {
+  const key = channelIdKey(rec.ch, rec.id);
+  if (whitelist.has(key)) return 0;
+  if (isFocusCandidate(rec, key, false)) return baselineCounts.has(key) ? 1 : 0;
+  return 2;
 }
 
 function passesLocalFilters(rec) {
@@ -249,7 +272,6 @@ function passesLocalFilters(rec) {
   const isWhitelisted = whitelist.has(key);
   if (whitelistOnly.checked && !isWhitelisted) return false;
   if (!isWhitelisted && hidden.has(key)) return false;
-  if (!isFocusCandidate(rec, key, isWhitelisted)) return false;
   if (channelFilter.value === 'A' && rec.ch !== 0) return false;
   if (channelFilter.value === 'B' && rec.ch !== 1) return false;
   const exact = parseId(idFilter.value);
@@ -315,66 +337,198 @@ function appendIdCell(cell, rec) {
   cell.appendChild(actions);
 }
 
+/* ---------------------------------------------------------------------------
+ * [2] 覆盖 ensureRows：一次性建好 ID 单元、8 个字节 span、各数值单元，
+ *     并把引用挂在 rows[key] 上，供 paintRecord 直接更新文本。
+ * ------------------------------------------------------------------------- */
 function ensureRows(rec) {
   const key = rec.key;
   if (rows[key]) return rows[key];
-
+ 
   const tr = document.createElement('tr');
-  tr.innerHTML = '<td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td>';
+ 
+  // 位视图行
   const bit = document.createElement('tr');
   bit.className = 'bit-view hidden';
   bit.dataset.manualHidden = '1';
-  bit.innerHTML = '<td colspan="8"></td>';
+  const bitTd = document.createElement('td');
+  bitTd.colSpan = 8;
+  bit.appendChild(bitTd);
+ 
+  // ID 单元（只建一次，含标注徽标 + 白/隐按钮）
+  const idTd = document.createElement('td');
+  idTd.className = 'selectable-id';
+  idTd.title = '选择信号工作台目标';
+  idTd.onclick = (ev) => { ev.stopPropagation(); selectSignalTarget(rec.ch, rec.id); };
+  const idSpan = document.createElement('span');
+  idSpan.className = 'id-text';
+  idSpan.textContent = idText(rec.id);
+  const badge = document.createElement('span');
+  badge.className = 'label-badge';
+  badge.style.display = 'none';
+  const actions = document.createElement('span');
+  actions.className = 'row-actions';
+  const wBtn = document.createElement('button');
+  wBtn.type = 'button'; wBtn.textContent = '白'; wBtn.title = '切换白名单';
+  wBtn.onclick = (ev) => { ev.stopPropagation(); toggleWhitelist(rec); };
+  const hBtn = document.createElement('button');
+  hBtn.type = 'button'; hBtn.textContent = '隐'; hBtn.title = '隐藏到本地黑名单';
+  hBtn.onclick = (ev) => { ev.stopPropagation(); hideRecord(rec); };
+  actions.appendChild(wBtn); actions.appendChild(hBtn);
+  idTd.appendChild(idSpan); idTd.appendChild(badge); idTd.appendChild(actions);
+ 
+  // 数据单元：8 个可复用 span
+  const dataTd = document.createElement('td');
+  const byteSpans = [];
+  for (let i = 0; i < 8; i++) {
+    const s = document.createElement('span');
+    s.className = 'byte';
+    s.style.display = 'none';
+    dataTd.appendChild(s);
+    byteSpans.push(s);
+  }
+ 
+  const dlcTd = document.createElement('td');
+  const countTd = document.createElement('td');
+  const deltaTd = document.createElement('td');
+  const periodTd = document.createElement('td');
+  const jitterTd = document.createElement('td');
+  const scoreTd = document.createElement('td');
+ 
+  tr.appendChild(idTd);
+  tr.appendChild(dlcTd);
+  tr.appendChild(dataTd);
+  tr.appendChild(countTd);
+  tr.appendChild(deltaTd);
+  tr.appendChild(periodTd);
+  tr.appendChild(jitterTd);
+  tr.appendChild(scoreTd);
+ 
   tr.onclick = () => {
     const hiddenNow = bit.classList.toggle('hidden');
     bit.dataset.manualHidden = hiddenNow ? '1' : '0';
+    if (!hiddenNow) {
+      const r = records[key];
+      if (r) bitTd.innerHTML = bitHtml(r);   // 打开时才填位视图
+    }
   };
   tr.ondblclick = (ev) => { ev.stopPropagation(); editLabel(rec); };
-  rows[key] = { tr, bit };
+ 
+  rows[key] = {
+    tr, bit, bitTd, badge, byteSpans,
+    dlcTd, countTd, deltaTd, periodTd, jitterTd, scoreTd,
+    lastClass: '',
+  };
   tbody[rec.ch].appendChild(tr);
   tbody[rec.ch].appendChild(bit);
+  needSort = true;   // 新行 → 下个排序周期归位
   return rows[key];
 }
 
+ 
+/* ---------------------------------------------------------------------------
+ * [3] 覆盖 paintRecord：只更新动态内容，不重建节点、不重新 append。
+ * ------------------------------------------------------------------------- */
 function paintRecord(rec) {
   const pair = ensureRows(rec);
   const tr = pair.tr;
+  const key = channelIdKey(rec.ch, rec.id);
   const hiddenRow = rowHidden(rec);
-  tr.className = rowClass(rec.changeScore);
+ 
+  const cls = rowClass(rec.changeScore);
+  if (cls !== pair.lastClass) { tr.className = cls; pair.lastClass = cls; }
   tr.classList.toggle('hidden', hiddenRow);
-  tr.classList.toggle('whitelisted', whitelist.has(channelIdKey(rec.ch, rec.id)));
-  tr.classList.toggle('baselined', hidden.has(channelIdKey(rec.ch, rec.id)));
-  if (hiddenRow || pair.bit.dataset.manualHidden !== '0') {
-    pair.bit.classList.add('hidden');
-  } else {
-    pair.bit.classList.remove('hidden');
+  tr.classList.toggle('whitelisted', whitelist.has(key));
+  tr.classList.toggle('baselined', hidden.has(key));
+ 
+  if (hiddenRow || pair.bit.dataset.manualHidden !== '0') pair.bit.classList.add('hidden');
+  else pair.bit.classList.remove('hidden');
+ 
+  if (hiddenRow) return;   // 隐藏行不更新内容，省一大笔
+ 
+  const label = labels.get(key);
+  if (label) {
+    if (pair.badge.textContent !== label) { pair.badge.textContent = label; pair.badge.title = label; }
+    if (pair.badge.style.display !== '') pair.badge.style.display = '';
+  } else if (pair.badge.style.display !== 'none') {
+    pair.badge.style.display = 'none';
   }
-
-  const c = tr.children;
-  appendIdCell(c[0], rec);
-  c[1].textContent = rec.dlc;
-  c[2].innerHTML = dataHtml(rec);
-  c[3].textContent = rec.count;
-  c[4].textContent = rec.deltaMs;
-  c[5].textContent = rec.periodMs;
-  c[6].textContent = rec.jitterMs;
-  c[7].textContent = rec.changeScore;
-  pair.bit.children[0].innerHTML = bitHtml(rec);
+ 
+  for (let i = 0; i < 8; i++) {
+    const s = pair.byteSpans[i];
+    if (i < rec.dlc) {
+      const txt = formatByte(rec.data[i]);
+      if (s.textContent !== txt) s.textContent = txt;
+      const c = ('byte ' + byteClass(rec.byteAge[i])).trim();
+      if (s.className !== c) s.className = c;
+      if (s.style.display !== '') s.style.display = '';
+    } else if (s.style.display !== 'none') {
+      s.style.display = 'none';
+    }
+  }
+ 
+  setText(pair.dlcTd, rec.dlc);
+  setText(pair.countTd, rec.count);
+  setText(pair.deltaTd, rec.deltaMs);
+  setText(pair.periodTd, rec.periodMs);
+  setText(pair.jitterTd, rec.jitterMs);
+  setText(pair.scoreTd, rec.changeScore);
+ 
+  if (!pair.bit.classList.contains('hidden')) pair.bitTd.innerHTML = bitHtml(rec);
 }
-
+ 
+ 
+/* ---------------------------------------------------------------------------
+ * [4] 覆盖 sortTables：顺序差分 + documentFragment 单次重排。
+ *     顺序没变直接跳过；变了也只 reflow 一次/通道。
+ * ------------------------------------------------------------------------- */
 function sortTables() {
   for (const ch of [0, 1]) {
     const list = Object.values(records)
       .filter(r => r.ch === ch && !rowHidden(r))
-      .sort((a, b) => sortSelect.value === 'activity' ? (b.changeScore - a.changeScore || a.id - b.id) : (a.id - b.id));
-    for (const rec of list) {
-      const pair = ensureRows(rec);
-      tbody[ch].appendChild(pair.tr);
-      tbody[ch].appendChild(pair.bit);
+      .sort((a, b) => {
+        const rank = focusRank(a) - focusRank(b);
+        if (rank !== 0) return rank;
+        return sortSelect.value === 'activity'
+          ? (b.changeScore - a.changeScore || a.id - b.id)
+          : (a.id - b.id);
+      });
+ 
+    const order = list.map(r => r.key);
+    const prev = lastOrder[ch];
+    let same = order.length === prev.length;
+    if (same) {
+      for (let i = 0; i < order.length; i++) {
+        if (order[i] !== prev[i]) { same = false; break; }
+      }
     }
+    if (same) continue;            // 顺序未变 → 完全不动 DOM
+ 
+    lastOrder[ch] = order;
+    const frag = document.createDocumentFragment();
+    for (const rec of list) {
+      const pair = rows[rec.key];
+      if (!pair) continue;
+      frag.appendChild(pair.tr);
+      frag.appendChild(pair.bit);
+    }
+    tbody[ch].appendChild(frag);   // 一次性插入，单次 reflow
   }
+  needSort = false;
 }
-
+ 
+// 排序节流（300ms 合并一次）
+function scheduleSort() {
+  if (sortQueued) return;
+  sortQueued = true;
+  setTimeout(() => { sortQueued = false; sortTables(); }, 300);
+}
+ 
+ 
+/* ---------------------------------------------------------------------------
+ * [5] 覆盖 scheduleRecordRender：把 sortTables() 从每帧里拿掉，
+ *     只在有新行（needSort）时才安排一次排序。
+ * ------------------------------------------------------------------------- */
 function scheduleRecordRender(full = false) {
   if (full) fullRecordRenderQueued = true;
   if (recordRenderQueued) return;
@@ -393,7 +547,7 @@ function scheduleRecordRender(full = false) {
       }
     }
     dirtyRecordKeys.clear();
-    sortTables();
+    if (needSort) scheduleSort();   // 关键：不再每帧排序
   });
 }
 
@@ -415,11 +569,19 @@ function schedulePretriggerRender() {
   });
 }
 
+ 
+/* ---------------------------------------------------------------------------
+ * [6] 覆盖 repaintAll：仍然能触发全量重绘，但现在重绘很便宜；
+ *     过滤/排序/白名单变化时需要重排，所以这里强制安排一次排序。
+ * ------------------------------------------------------------------------- */
 function repaintAll() {
+  needSort = true;
   scheduleRecordRender(true);
   scheduleSnapshotRender();
   schedulePretriggerRender();
+  scheduleSort();
 }
+ 
 
 function toggleWhitelist(rec) {
   const key = channelIdKey(rec.ch, rec.id);
@@ -435,13 +597,20 @@ function hideRecord(rec) {
   repaintAll();
 }
 
+/* ---------------------------------------------------------------------------
+ * [7] 覆盖 captureFocusBaseline：软隐藏基线（记录各 ID 当前 changeScore）。
+ *     注意：不再往 hidden 黑名单里加东西。
+ * ------------------------------------------------------------------------- */
 function captureFocusBaseline() {
   baselineCounts.clear();
-  for (const rec of Object.values(records)) baselineCounts.set(channelIdKey(rec.ch, rec.id), rec.changeScore);
+  for (const rec of Object.values(records)) {
+    baselineCounts.set(channelIdKey(rec.ch, rec.id), rec.changeScore);
+  }
   focusMode.checked = true;
-  p3Status.textContent = `聚焦基线=${baselineCounts.size} 个 ID；仅显示新 ID、变化 ID、白名单或显式过滤范围`;
+  p3Status.textContent = `聚焦基线=${baselineCounts.size} 个 ID（软隐藏：变化超过阈值即自动显示）`;
   repaintAll();
 }
+ 
 
 function sendCmd(obj) {
   if (!ws || ws.readyState !== WebSocket.OPEN) {
@@ -1026,18 +1195,22 @@ function parsePretrigger(buf, dv, count) {
 }
 
 
+/* ---------------------------------------------------------------------------
+ * [8] 覆盖 parseBaseline：设备回包的 ID 也并入软基线，
+ *     不再 hidden.add（这正是"基线后某些记录永久不显示"的根因）。
+ * ------------------------------------------------------------------------- */
 function parseBaseline(buf, dv, count) {
-  let added = 0;
   let o = 3;
   for (let i = 0; i < count; i++) {
     if (o + 3 > buf.byteLength) break;
     const ch = dv.getUint8(o); o += 1;
     const id = dv.getUint16(o, true); o += 2;
     const key = channelIdKey(ch, id);
-    if (!hidden.has(key)) added++;
-    hidden.add(key);
+    const rec = records[recordKey(ch, id)];
+    if (!baselineCounts.has(key)) baselineCounts.set(key, rec ? rec.changeScore : 0);
   }
-  p3Status.textContent = `基线隐藏 +${added}，总计=${hidden.size}`;
+  focusMode.checked = true;
+  p3Status.textContent = `聚焦基线=${baselineCounts.size} 个 ID（软隐藏：变化超过阈值即自动显示）`;
   repaintAll();
 }
 
@@ -1063,6 +1236,8 @@ function connect() {
   ws.onmessage = (ev) => {
     if (!(ev.data instanceof ArrayBuffer) || ev.data.byteLength === 0) return;
     const type = new DataView(ev.data).getUint8(0);
+    _wsMsg++; 
+    if (type === 0x01) _wsRec += new DataView(ev.data).getUint8(1);  
     if (type === 0x01) parseDelta(ev.data);
     if (type === 0x02) parseStats(ev.data);
     if (type === 0x03) parseP3(ev.data);
@@ -1483,4 +1658,27 @@ loadLabels();
 refreshWifiStatus();
 refreshTxBanner();
 setInterval(refreshTxBanner, 2000);
-setInterval(() => { if (!freezeView.checked) repaintAll(); }, 500);
+
+/* ---------------------------------------------------------------------------
+ * [9] 轻量周期刷新：替换掉底部那行
+ *        setInterval(() => { if (!freezeView.checked) repaintAll(); }, 500);
+ *     改成只刷新可见行（不再每 500ms 全量重画 + 重渲染快照/回看）。
+ * ------------------------------------------------------------------------- */
+function refreshVisible() {
+  if (freezeView.checked) return;
+  for (const key in rows) {
+    const rec = records[key];
+    if (rec && !rowHidden(rec)) paintRecord(rec);
+  }
+  scheduleSort();
+}
+setInterval(refreshVisible, 500);
+
+
+const _wsHud = document.createElement('div');
+_wsHud.style.cssText = 'position:fixed;top:8px;right:8px;z-index:9999;background:rgba(0,0,0,.8);color:#0f0;font:12px/1.4 monospace;padding:6px 10px;border-radius:6px;pointer-events:none;white-space:pre';
+document.body.appendChild(_wsHud);
+setInterval(() => {
+  _wsHud.textContent = `WS 消息/秒=${_wsMsg}\n记录/秒=${_wsRec}\n${busStats.textContent}`;
+  _wsMsg = 0; _wsRec = 0;
+}, 1000);
