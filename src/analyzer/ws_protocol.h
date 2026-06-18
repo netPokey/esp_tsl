@@ -6,22 +6,6 @@ enum WsMsgType : uint8_t
 {
     WS_MSG_FRAME_DELTA = 0x01,
     WS_MSG_BUS_STATS = 0x02,
-    WS_MSG_DIFF = 0x03,
-    WS_MSG_SIGNAL = 0x04,
-};
-
-enum WsDiffSubtype : uint8_t
-{
-    WS_DIFF_SNAPSHOT = 0x01,
-    WS_DIFF_PRETRIGGER = 0x02,
-    WS_DIFF_BASELINE = 0x03,
-    WS_DIFF_LABELS = 0x04,
-};
-
-enum WsSignalSubtype : uint8_t
-{
-    WS_SIGNAL_SAMPLES = 0x01,
-    WS_SIGNAL_HINTS = 0x02,
 };
 
 #pragma pack(push, 1)
@@ -53,60 +37,7 @@ struct WsBusStats
     uint8_t bus_off_b;
     uint32_t dropped;
 };
-
-struct WsPretriggerRecord
-{
-    uint8_t channel;
-    uint16_t id;
-    uint16_t first_seen_ms_ago;
-    uint16_t last_seen_ms_ago;
-    uint16_t frames;
-    uint16_t changes;
-    uint8_t dlc;
-    uint8_t data[8];
-};
-
-struct WsDiffRecord
-{
-    uint8_t channel;
-    uint16_t id;
-    uint8_t kind;
-    uint8_t dlc_a;
-    uint8_t data_a[8];
-    uint8_t dlc_b;
-    uint8_t data_b[8];
-};
-
-struct WsBaselineRecord
-{
-    uint8_t channel;
-    uint16_t id;
-};
-
-struct WsSignalSampleRecord
-{
-    uint8_t channel;
-    uint16_t id;
-    uint8_t dlc;
-    uint8_t data[8];
-    uint16_t sample_age_ms;
-    uint32_t sequence_lo;
-};
-
-struct WsSignalHintRecord
-{
-    uint8_t kind;
-    uint8_t start_bit;
-    uint8_t bit_length;
-    uint16_t confidence_x1000;
-    char evidence[16];
-};
 #pragma pack(pop)
 
 size_t wsBuildFrameDelta(uint8_t *buf, size_t cap, const WsFrameRecord *recs, uint8_t count);
 size_t wsBuildBusStats(uint8_t *buf, size_t cap, const WsBusStats &stats);
-size_t wsBuildSnapshotDiff(uint8_t *buf, size_t cap, const WsDiffRecord *recs, uint8_t count);
-size_t wsBuildPretrigger(uint8_t *buf, size_t cap, const WsPretriggerRecord *recs, uint8_t count);
-size_t wsBuildBaseline(uint8_t *buf, size_t cap, const WsBaselineRecord *recs, uint8_t count);
-size_t wsBuildSignalSamples(uint8_t *buf, size_t cap, const WsSignalSampleRecord *recs, uint8_t count);
-size_t wsBuildSignalHints(uint8_t *buf, size_t cap, const WsSignalHintRecord *recs, uint8_t count);
