@@ -1,13 +1,3 @@
-const banner = document.getElementById('tx-banner');
-const masterToggle = document.getElementById('master-toggle');
-const txAToggle = document.getElementById('tx-a-toggle');
-const txBToggle = document.getElementById('tx-b-toggle');
-const txSendChannel = document.getElementById('tx-send-channel');
-const txSendId = document.getElementById('tx-send-id');
-const txSendDlc = document.getElementById('tx-send-dlc');
-const txSendBtn = document.getElementById('tx-send-btn');
-const txSendStatus = document.getElementById('tx-send-status');
-const txByteInputs = Array.from({ length: 8 }, (_, i) => document.getElementById(`tx-byte-${i}`));
 const busHealth = document.getElementById('bus-health');
 const busStats = document.getElementById('bus-stats');
 const statusEl = document.getElementById('status');
@@ -16,35 +6,11 @@ const suppressStatic = document.getElementById('suppress-static');
 const staticSeconds = document.getElementById('static-seconds');
 const freezeView = document.getElementById('freeze-view');
 const sortSelect = document.getElementById('sort-select');
-const baselineBtn = document.getElementById('baseline-btn');
-const snapABtn = document.getElementById('snapshot-a-btn');
-const snapBBtn = document.getElementById('snapshot-b-btn');
-const diffBtn = document.getElementById('diff-btn');
-const markBtn = document.getElementById('mark-btn');
 const channelFilter = document.getElementById('channel-filter');
 const idFilter = document.getElementById('id-filter');
 const rangeFrom = document.getElementById('range-from');
 const rangeTo = document.getElementById('range-to');
 const searchBox = document.getElementById('search-box');
-const focusMode = document.getElementById('focus-mode');
-const focusChangeThreshold = document.getElementById('focus-change-threshold');
-const whitelistOnly = document.getElementById('whitelist-only');
-const p3Status = document.getElementById('p3-status');
-const recordStartBtn = document.getElementById('record-start-btn');
-const recordStopBtn = document.getElementById('record-stop-btn');
-const recordDownload = document.getElementById('record-download');
-const recordDownloadAsc = document.getElementById('record-download-asc');
-const recordStatusEl = document.getElementById('record-status');
-const triggerMode = document.getElementById('trigger-mode');
-const triggerChannel = document.getElementById('trigger-channel');
-const triggerId = document.getElementById('trigger-id');
-const triggerArmBtn = document.getElementById('trigger-arm-btn');
-const triggerDisarmBtn = document.getElementById('trigger-disarm-btn');
-const triggerStatusEl = document.getElementById('trigger-status');
-const replayTarget = document.getElementById('replay-target');
-const replayStartBtn = document.getElementById('replay-start-btn');
-const replayStopBtn = document.getElementById('replay-stop-btn');
-const replayStatusEl = document.getElementById('replay-status');
 const wifiMode = document.getElementById('wifi-mode');
 const wifiIp = document.getElementById('wifi-ip');
 const wifiSsid = document.getElementById('wifi-ssid');
@@ -54,89 +20,25 @@ const wifiRefreshBtn = document.getElementById('wifi-refresh-btn');
 const deviceRestartBtn = document.getElementById('device-restart-btn');
 const deviceShutdownBtn = document.getElementById('device-shutdown-btn');
 const wifiStatus = document.getElementById('wifi-status');
-const snapshotSummary = document.getElementById('snapshot-summary');
-const pretriggerSummary = document.getElementById('pretrigger-summary');
-const snapshotBody = document.querySelector('#snapshot-diff tbody');
-const pretriggerBody = document.querySelector('#pretrigger tbody');
-const signalTargetEl = document.getElementById('signal-target');
-const signalStatusEl = document.getElementById('signal-status');
-const signalHintsBtn = document.getElementById('signal-hints-btn');
-const signalExportBtn = document.getElementById('signal-export-btn');
-const signalImportBtn = document.getElementById('signal-import-btn');
-const signalImportFile = document.getElementById('signal-import-file');
-const signalLoadCommonBtn = document.getElementById('signal-load-common-btn');
-const signalSaveCommonBtn = document.getElementById('signal-save-common-btn');
-const sigLabel = document.getElementById('sig-label');
-const sigStartBit = document.getElementById('sig-start-bit');
-const sigBitLength = document.getElementById('sig-bit-length');
-const sigEndian = document.getElementById('sig-endian');
-const sigSigned = document.getElementById('sig-signed');
-const sigScale = document.getElementById('sig-scale');
-const sigOffset = document.getElementById('sig-offset');
-const sigDisplay = document.getElementById('sig-display');
-const sigSaveBtn = document.getElementById('sig-save-btn');
-const signalSpecsEl = document.getElementById('signal-specs');
-const signalDecodeEl = document.getElementById('signal-decode');
-const signalHintsEl = document.getElementById('signal-hints');
 const tbody = { 0: document.querySelector('#tbl-a tbody'), 1: document.querySelector('#tbl-b tbody') };
 const rows = {};
 const records = {};
-const labels = new Map();
-const hidden = new Set();
-const whitelist = new Set();
-const baselineCounts = new Map();
-let snapshotDiffRows = [];
-let pretriggerRows = [];
-let signalTarget = null;
-let signalSamples = [];
-let signalHints = [];
+let ws = null;
+let needSort = false;
+let sortQueued = false;
 let recordRenderQueued = false;
 let fullRecordRenderQueued = false;
 const dirtyRecordKeys = new Set();
-let snapshotRenderQueued = false;
-let pretriggerRenderQueued = false;
-let signalSpecs = [];
-let ws = null;
-let _wsMsg = 0, _wsRec = 0;  
-let txState = { master: false, a: false, b: false, onlineA: false, onlineB: false };
-let triggerPendingAction = '';
-let triggerPendingText = '';
+const lastOrder = { 0: [], 1: [] };
 
-/* ---------------------------------------------------------------------------
- * [1] 顶层变量：加到 app.js 里其它 let/const 声明附近（比如 rows 定义之后）
- * ------------------------------------------------------------------------- */
-let needSort = false;            // 有新行出现 / 排序条件变化时置 true
-let sortQueued = false;
-const lastOrder = { 0: [], 1: [] };   // 上次每通道的行顺序，用于差分
- 
 function setText(node, value) {
   const v = String(value);
-  if (node.textContent !== v) node.textContent = v;   // 不变则不写，省 reflow
+  if (node.textContent !== v) node.textContent = v;
 }
- 
-
-
-
 function hex(n, w) { return n.toString(16).toUpperCase().padStart(w, '0'); }
 function printable(b) { return b >= 32 && b <= 126 ? String.fromCharCode(b) : '.'; }
-function channelName(ch) { return ch === 1 ? 'B' : 'A'; }
-function channelIdKey(ch, id) { return `${channelName(ch)}:${id}`; }
 function recordKey(ch, id) { return ch * 4096 + id; }
 function idText(id) { return '0x' + hex(id, 3); }
-
-function textNode(text) { return document.createTextNode(String(text)); }
-function clearNode(node) { while (node.firstChild) node.removeChild(node.firstChild); }
-
-function parseId(text) {
-  try {
-    return parseBoundedIntText(text, 0x7ff);
-  } catch (e) {
-    return null;
-  }
-}
-
-function targetKey(ch, id) { return `${channelName(ch)}:${id}`; }
-function targetMatches(target, ch, id) { return !!target && target.ch === ch && target.id === id; }
 
 function parseBoundedIntText(text, max) {
   const raw = String(text || '').trim();
@@ -149,47 +51,9 @@ function parseBoundedIntText(text, max) {
   if (!Number.isInteger(value) || value < 0 || value > max) throw new Error(`数值超出范围：${raw}`);
   return value;
 }
-
-function parseTxSendForm() {
-  const ch = txSendChannel.value;
-  const id = parseBoundedIntText(txSendId.value, 0x7FF);
-  const dlc = Number(txSendDlc.value);
-  if ((ch !== 'A' && ch !== 'B') || !Number.isInteger(dlc) || dlc < 0 || dlc > 8) throw new Error('DLC 必须是 0..8');
-  const data = [];
-  for (let i = 0; i < dlc; i++) data.push(parseBoundedIntText(txByteInputs[i].value, 0xFF));
-  return { ch, id, dlc, data };
+function parseId(text) {
+  try { return parseBoundedIntText(text, 0x7ff); } catch (e) { return null; }
 }
-
-function parseTriggerArmForm() {
-  const mode = triggerMode.value;
-  if (mode === 'new_id') return { mode: 'new_id' };
-  if (mode === 'any_change') return { mode: 'any_change' };
-  if (mode === 'id_change') {
-    const ch = triggerChannel.value === 'B' ? 'B' : 'A';
-    const id = parseBoundedIntText(triggerId.value, 0x7FF);
-    return { mode: 'id_change', ch, id };
-  }
-  throw new Error('请选择有效触发模式');
-}
-
-function updateTxSendButton() {
-  const ch = txSendChannel.value;
-  const channelOn = ch === 'A' ? txState.a && txState.onlineA : txState.b && txState.onlineB;
-  txSendBtn.disabled = !(txState.master && channelOn);
-}
-
-function endianToWire(endian) { return endian === 'motorola' || endian === 1 || endian === '1' ? 1 : 0; }
-function endianToText(endian) { return endian === 1 || endian === '1' || endian === 'motorola' ? 'motorola' : 'intel'; }
-function signedToBool(value) { return value === true || value === 1 || value === '1'; }
-function displayToText(value) { return value === 'raw' || value === 'step' ? value : 'line'; }
-function endianLabel(value) { return endianToText(value) === 'motorola' ? 'Motorola 大端' : 'Intel 小端'; }
-function displayLabel(value) {
-  const v = displayToText(value);
-  if (v === 'raw') return '原始值';
-  if (v === 'step') return '阶梯';
-  return '折线';
-}
-function statusSignal(text) { signalStatusEl.textContent = `${text} · 浏览器工作集=${signalSpecs.length}`; }
 
 function formatByte(b) {
   switch (baseSelect.value) {
@@ -199,22 +63,11 @@ function formatByte(b) {
     default: return hex(b, 2);
   }
 }
-
 function byteClass(ageMs) {
   if (ageMs < 500) return 'hot';
   if (ageMs < 2500) return 'warm';
   return '';
 }
-
-function dataHtml(rec) {
-  const parts = [];
-  for (let i = 0; i < rec.dlc; i++) {
-    const cls = byteClass(rec.byteAge[i]);
-    parts.push(`<span class="byte ${cls}">${formatByte(rec.data[i])}</span>`);
-  }
-  return parts.join('');
-}
-
 function bitHtml(rec) {
   let out = '';
   for (let byte = 0; byte < rec.dlc; byte++) {
@@ -227,11 +80,6 @@ function bitHtml(rec) {
   }
   return out;
 }
-
-function dataText(data, dlc) {
-  return data.slice(0, dlc).map(formatByte).join(' ');
-}
-
 function isStatic(rec) {
   if (!suppressStatic.checked) return false;
   const thresholdMs = Math.max(1, Number(staticSeconds.value) || 5) * 1000;
@@ -240,38 +88,12 @@ function isStatic(rec) {
   }
   return true;
 }
-
 function rowClass(score) {
   if (score >= 20) return 'activity-high';
   if (score >= 5) return 'activity-med';
   return 'activity-low';
 }
-
-function hasExplicitFilter() {
-  return channelFilter.value !== 'all' || idFilter.value.trim() || rangeFrom.value.trim() || rangeTo.value.trim() || searchBox.value.trim();
-}
-
-function isFocusCandidate(rec, key, isWhitelisted) {
-  if (!focusMode.checked || isWhitelisted || hasExplicitFilter()) return true;
-  if (!Number.isFinite(rec.changeScore)) return true;
-  if (!baselineCounts.has(key)) return true;
-  const baselineCount = baselineCounts.get(key) || 0;
-  const threshold = Math.max(1, Number(focusChangeThreshold.value) || 1);
-  return rec.changeScore >= baselineCount + threshold;
-}
-
-function focusRank(rec) {
-  const key = channelIdKey(rec.ch, rec.id);
-  if (whitelist.has(key)) return 0;
-  if (isFocusCandidate(rec, key, false)) return baselineCounts.has(key) ? 1 : 0;
-  return 2;
-}
-
 function passesLocalFilters(rec) {
-  const key = channelIdKey(rec.ch, rec.id);
-  const isWhitelisted = whitelist.has(key);
-  if (whitelistOnly.checked && !isWhitelisted) return false;
-  if (!isWhitelisted && hidden.has(key)) return false;
   if (channelFilter.value === 'A' && rec.ch !== 0) return false;
   if (channelFilter.value === 'B' && rec.ch !== 1) return false;
   const exact = parseId(idFilter.value);
@@ -285,99 +107,33 @@ function passesLocalFilters(rec) {
   if (to !== null && rec.id > to) return false;
   const q = searchBox.value.trim().toLowerCase();
   if (q) {
-    const label = (labels.get(key) || '').toLowerCase();
     const idHex = idText(rec.id).toLowerCase();
     const idBare = hex(rec.id, 3).toLowerCase();
-    if (!label.includes(q) && !idHex.includes(q) && !idBare.includes(q)) return false;
+    if (!idHex.includes(q) && !idBare.includes(q)) return false;
   }
   return true;
 }
-
-function passesP3Filter(rec) {
-  return passesLocalFilters({ ch: rec.ch, id: rec.id });
-}
-
 function rowHidden(rec) {
   return isStatic(rec) || !passesLocalFilters(rec);
 }
-
-function appendIdCell(cell, rec) {
-  clearNode(cell);
-  cell.className = 'selectable-id';
-  cell.title = '选择信号工作台目标';
-  cell.onclick = (ev) => { ev.stopPropagation(); selectSignalTarget(rec.ch, rec.id); };
-  const idSpan = document.createElement('span');
-  idSpan.className = 'id-text';
-  idSpan.textContent = idText(rec.id);
-  cell.appendChild(idSpan);
-
-  const label = labels.get(channelIdKey(rec.ch, rec.id));
-  if (label) {
-    const badge = document.createElement('span');
-    badge.className = 'label-badge';
-    badge.title = label;
-    badge.textContent = label;
-    cell.appendChild(badge);
-  }
-
-  const actions = document.createElement('span');
-  actions.className = 'row-actions';
-  const w = document.createElement('button');
-  w.type = 'button';
-  w.textContent = '白';
-  w.title = '切换白名单';
-  w.onclick = (ev) => { ev.stopPropagation(); toggleWhitelist(rec); };
-  const b = document.createElement('button');
-  b.type = 'button';
-  b.textContent = '隐';
-  b.title = '隐藏到本地黑名单';
-  b.onclick = (ev) => { ev.stopPropagation(); hideRecord(rec); };
-  actions.appendChild(w);
-  actions.appendChild(b);
-  cell.appendChild(actions);
-}
-
-/* ---------------------------------------------------------------------------
- * [2] 覆盖 ensureRows：一次性建好 ID 单元、8 个字节 span、各数值单元，
- *     并把引用挂在 rows[key] 上，供 paintRecord 直接更新文本。
- * ------------------------------------------------------------------------- */
 function ensureRows(rec) {
   const key = rec.key;
   if (rows[key]) return rows[key];
- 
+
   const tr = document.createElement('tr');
- 
-  // 位视图行
   const bit = document.createElement('tr');
   bit.className = 'bit-view hidden';
   bit.dataset.manualHidden = '1';
   const bitTd = document.createElement('td');
   bitTd.colSpan = 8;
   bit.appendChild(bitTd);
- 
-  // ID 单元（只建一次，含标注徽标 + 白/隐按钮）
+
   const idTd = document.createElement('td');
-  idTd.className = 'selectable-id';
-  idTd.title = '选择信号工作台目标';
-  idTd.onclick = (ev) => { ev.stopPropagation(); selectSignalTarget(rec.ch, rec.id); };
   const idSpan = document.createElement('span');
   idSpan.className = 'id-text';
   idSpan.textContent = idText(rec.id);
-  const badge = document.createElement('span');
-  badge.className = 'label-badge';
-  badge.style.display = 'none';
-  const actions = document.createElement('span');
-  actions.className = 'row-actions';
-  const wBtn = document.createElement('button');
-  wBtn.type = 'button'; wBtn.textContent = '白'; wBtn.title = '切换白名单';
-  wBtn.onclick = (ev) => { ev.stopPropagation(); toggleWhitelist(rec); };
-  const hBtn = document.createElement('button');
-  hBtn.type = 'button'; hBtn.textContent = '隐'; hBtn.title = '隐藏到本地黑名单';
-  hBtn.onclick = (ev) => { ev.stopPropagation(); hideRecord(rec); };
-  actions.appendChild(wBtn); actions.appendChild(hBtn);
-  idTd.appendChild(idSpan); idTd.appendChild(badge); idTd.appendChild(actions);
- 
-  // 数据单元：8 个可复用 span
+  idTd.appendChild(idSpan);
+
   const dataTd = document.createElement('td');
   const byteSpans = [];
   for (let i = 0; i < 8; i++) {
@@ -387,14 +143,14 @@ function ensureRows(rec) {
     dataTd.appendChild(s);
     byteSpans.push(s);
   }
- 
+
   const dlcTd = document.createElement('td');
   const countTd = document.createElement('td');
   const deltaTd = document.createElement('td');
   const periodTd = document.createElement('td');
   const jitterTd = document.createElement('td');
   const scoreTd = document.createElement('td');
- 
+
   tr.appendChild(idTd);
   tr.appendChild(dlcTd);
   tr.appendChild(dataTd);
@@ -403,57 +159,40 @@ function ensureRows(rec) {
   tr.appendChild(periodTd);
   tr.appendChild(jitterTd);
   tr.appendChild(scoreTd);
- 
+
   tr.onclick = () => {
     const hiddenNow = bit.classList.toggle('hidden');
     bit.dataset.manualHidden = hiddenNow ? '1' : '0';
     if (!hiddenNow) {
       const r = records[key];
-      if (r) bitTd.innerHTML = bitHtml(r);   // 打开时才填位视图
+      if (r) bitTd.innerHTML = bitHtml(r);
     }
   };
-  tr.ondblclick = (ev) => { ev.stopPropagation(); editLabel(rec); };
- 
+
   rows[key] = {
-    tr, bit, bitTd, badge, byteSpans,
+    tr, bit, bitTd, byteSpans,
     dlcTd, countTd, deltaTd, periodTd, jitterTd, scoreTd,
     lastClass: '',
   };
   tbody[rec.ch].appendChild(tr);
   tbody[rec.ch].appendChild(bit);
-  needSort = true;   // 新行 → 下个排序周期归位
+  needSort = true;
   return rows[key];
 }
-
- 
-/* ---------------------------------------------------------------------------
- * [3] 覆盖 paintRecord：只更新动态内容，不重建节点、不重新 append。
- * ------------------------------------------------------------------------- */
 function paintRecord(rec) {
   const pair = ensureRows(rec);
   const tr = pair.tr;
-  const key = channelIdKey(rec.ch, rec.id);
   const hiddenRow = rowHidden(rec);
- 
+
   const cls = rowClass(rec.changeScore);
   if (cls !== pair.lastClass) { tr.className = cls; pair.lastClass = cls; }
   tr.classList.toggle('hidden', hiddenRow);
-  tr.classList.toggle('whitelisted', whitelist.has(key));
-  tr.classList.toggle('baselined', hidden.has(key));
- 
+
   if (hiddenRow || pair.bit.dataset.manualHidden !== '0') pair.bit.classList.add('hidden');
   else pair.bit.classList.remove('hidden');
- 
-  if (hiddenRow) return;   // 隐藏行不更新内容，省一大笔
- 
-  const label = labels.get(key);
-  if (label) {
-    if (pair.badge.textContent !== label) { pair.badge.textContent = label; pair.badge.title = label; }
-    if (pair.badge.style.display !== '') pair.badge.style.display = '';
-  } else if (pair.badge.style.display !== 'none') {
-    pair.badge.style.display = 'none';
-  }
- 
+
+  if (hiddenRow) return;
+
   for (let i = 0; i < 8; i++) {
     const s = pair.byteSpans[i];
     if (i < rec.dlc) {
@@ -466,34 +205,25 @@ function paintRecord(rec) {
       s.style.display = 'none';
     }
   }
- 
+
   setText(pair.dlcTd, rec.dlc);
   setText(pair.countTd, rec.count);
   setText(pair.deltaTd, rec.deltaMs);
   setText(pair.periodTd, rec.periodMs);
   setText(pair.jitterTd, rec.jitterMs);
   setText(pair.scoreTd, rec.changeScore);
- 
+
   if (!pair.bit.classList.contains('hidden')) pair.bitTd.innerHTML = bitHtml(rec);
 }
- 
- 
-/* ---------------------------------------------------------------------------
- * [4] 覆盖 sortTables：顺序差分 + documentFragment 单次重排。
- *     顺序没变直接跳过；变了也只 reflow 一次/通道。
- * ------------------------------------------------------------------------- */
+
 function sortTables() {
   for (const ch of [0, 1]) {
     const list = Object.values(records)
       .filter(r => r.ch === ch && !rowHidden(r))
-      .sort((a, b) => {
-        const rank = focusRank(a) - focusRank(b);
-        if (rank !== 0) return rank;
-        return sortSelect.value === 'activity'
-          ? (b.changeScore - a.changeScore || a.id - b.id)
-          : (a.id - b.id);
-      });
- 
+      .sort((a, b) => sortSelect.value === 'activity'
+        ? (b.changeScore - a.changeScore || a.id - b.id)
+        : (a.id - b.id));
+
     const order = list.map(r => r.key);
     const prev = lastOrder[ch];
     let same = order.length === prev.length;
@@ -502,8 +232,8 @@ function sortTables() {
         if (order[i] !== prev[i]) { same = false; break; }
       }
     }
-    if (same) continue;            // 顺序未变 → 完全不动 DOM
- 
+    if (same) continue;
+
     lastOrder[ch] = order;
     const frag = document.createDocumentFragment();
     for (const rec of list) {
@@ -512,23 +242,16 @@ function sortTables() {
       frag.appendChild(pair.tr);
       frag.appendChild(pair.bit);
     }
-    tbody[ch].appendChild(frag);   // 一次性插入，单次 reflow
+    tbody[ch].appendChild(frag);
   }
   needSort = false;
 }
- 
-// 排序节流（300ms 合并一次）
 function scheduleSort() {
   if (sortQueued) return;
   sortQueued = true;
   setTimeout(() => { sortQueued = false; sortTables(); }, 300);
 }
- 
- 
-/* ---------------------------------------------------------------------------
- * [5] 覆盖 scheduleRecordRender：把 sortTables() 从每帧里拿掉，
- *     只在有新行（needSort）时才安排一次排序。
- * ------------------------------------------------------------------------- */
+
 function scheduleRecordRender(full = false) {
   if (full) fullRecordRenderQueued = true;
   if (recordRenderQueued) return;
@@ -547,485 +270,15 @@ function scheduleRecordRender(full = false) {
       }
     }
     dirtyRecordKeys.clear();
-    if (needSort) scheduleSort();   // 关键：不再每帧排序
+    if (needSort) scheduleSort();
   });
 }
 
-function scheduleSnapshotRender() {
-  if (snapshotRenderQueued) return;
-  snapshotRenderQueued = true;
-  requestAnimationFrame(() => {
-    snapshotRenderQueued = false;
-    renderSnapshotDiffRows();
-  });
-}
-
-function schedulePretriggerRender() {
-  if (pretriggerRenderQueued) return;
-  pretriggerRenderQueued = true;
-  requestAnimationFrame(() => {
-    pretriggerRenderQueued = false;
-    renderPretriggerRows();
-  });
-}
-
- 
-/* ---------------------------------------------------------------------------
- * [6] 覆盖 repaintAll：仍然能触发全量重绘，但现在重绘很便宜；
- *     过滤/排序/白名单变化时需要重排，所以这里强制安排一次排序。
- * ------------------------------------------------------------------------- */
 function repaintAll() {
   needSort = true;
   scheduleRecordRender(true);
-  scheduleSnapshotRender();
-  schedulePretriggerRender();
   scheduleSort();
 }
- 
-
-function toggleWhitelist(rec) {
-  const key = channelIdKey(rec.ch, rec.id);
-  if (whitelist.has(key)) whitelist.delete(key);
-  else whitelist.add(key);
-  p3Status.textContent = `白名单=${whitelist.size}`;
-  repaintAll();
-}
-
-function hideRecord(rec) {
-  hidden.add(channelIdKey(rec.ch, rec.id));
-  p3Status.textContent = `已隐藏=${hidden.size}`;
-  repaintAll();
-}
-
-/* ---------------------------------------------------------------------------
- * [7] 覆盖 captureFocusBaseline：软隐藏基线（记录各 ID 当前 changeScore）。
- *     注意：不再往 hidden 黑名单里加东西。
- * ------------------------------------------------------------------------- */
-function captureFocusBaseline() {
-  baselineCounts.clear();
-  for (const rec of Object.values(records)) {
-    baselineCounts.set(channelIdKey(rec.ch, rec.id), rec.changeScore);
-  }
-  focusMode.checked = true;
-  p3Status.textContent = `聚焦基线=${baselineCounts.size} 个 ID（软隐藏：变化超过阈值即自动显示）`;
-  repaintAll();
-}
- 
-
-function sendCmd(obj) {
-  if (!ws || ws.readyState !== WebSocket.OPEN) {
-    p3Status.textContent = 'WS 未连接，命令未发送';
-    if (String(obj.cmd || '').startsWith('p4_')) statusSignal('WS 未连接，信号命令未发送');
-    return false;
-  }
-  ws.send(JSON.stringify(obj));
-  return true;
-}
-
-function sendSignalWatch(target, on) {
-  if (!target) return;
-  sendCmd({ cmd: 'p4_watch', ch: channelName(target.ch), id: target.id, on: !!on });
-}
-
-function selectSignalTarget(ch, id) {
-  if (targetMatches(signalTarget, ch, id)) return;
-  const previous = signalTarget;
-  signalTarget = { ch, id };
-  signalSamples = [];
-  signalHints = [];
-  if (previous) sendSignalWatch(previous, false);
-  sendSignalWatch(signalTarget, true);
-  statusSignal(`正在观察 ${channelName(ch)} ${idText(id)}`);
-  renderSignalWorkbench();
-}
-
-function specsForTarget() {
-  if (!signalTarget) return [];
-  return signalSpecs.filter(spec => targetMatches(spec, signalTarget.ch, signalTarget.id));
-}
-
-function normalizeSignalSpec(src, fallbackTarget) {
-  const chToken = src.ch !== undefined ? src.ch : src.channel;
-  const ch = chToken === 'B' || chToken === 1 || chToken === '1' ? 1 : (chToken === 'A' || chToken === 0 || chToken === '0' ? 0 : (fallbackTarget ? fallbackTarget.ch : null));
-  const id = Number(src.id !== undefined ? src.id : (fallbackTarget ? fallbackTarget.id : NaN));
-  const startBit = Number(src.start_bit);
-  const bitLength = Number(src.bit_length);
-  const scale = Number(src.scale === undefined ? 1 : src.scale);
-  const offset = Number(src.offset === undefined ? 0 : src.offset);
-  const label = String(src.label || '').trim();
-  const display = displayToText(src.display);
-  if (ch !== 0 && ch !== 1) return null;
-  if (!Number.isInteger(id) || id < 0 || id > 0x7ff) return null;
-  if (!Number.isInteger(startBit) || startBit < 0 || startBit > 63) return null;
-  if (!Number.isInteger(bitLength) || bitLength < 1 || bitLength > 64 || startBit + bitLength > 64) return null;
-  if (!Number.isFinite(scale) || !Number.isFinite(offset)) return null;
-  if (!label) return null;
-  return {
-    label,
-    ch,
-    id,
-    start_bit: startBit,
-    bit_length: bitLength,
-    endian: endianToText(src.endian),
-    signed: signedToBool(src.signed),
-    scale,
-    offset,
-    display,
-  };
-}
-
-function currentFormSpec() {
-  if (!signalTarget) return null;
-  return normalizeSignalSpec({
-    label: sigLabel.value,
-    ch: signalTarget.ch,
-    id: signalTarget.id,
-    start_bit: Number(sigStartBit.value),
-    bit_length: Number(sigBitLength.value),
-    endian: sigEndian.value,
-    signed: sigSigned.checked,
-    scale: Number(sigScale.value),
-    offset: Number(sigOffset.value),
-    display: sigDisplay.value,
-  }, signalTarget);
-}
-
-function fillSignalForm(spec) {
-  sigLabel.value = spec.label || '';
-  sigStartBit.value = spec.start_bit;
-  sigBitLength.value = spec.bit_length;
-  sigEndian.value = endianToText(spec.endian);
-  sigSigned.checked = signedToBool(spec.signed);
-  sigScale.value = spec.scale;
-  sigOffset.value = spec.offset;
-  sigDisplay.value = displayToText(spec.display);
-}
-
-function saveFormSpec() {
-  const spec = currentFormSpec();
-  if (!spec) {
-    statusSignal('规格无效：需要目标、信号名、有效位范围，以及数值比例/偏移');
-    return;
-  }
-  const idx = signalSpecs.findIndex(item => item.ch === spec.ch && item.id === spec.id && item.label === spec.label);
-  if (idx >= 0) signalSpecs[idx] = spec;
-  else signalSpecs.push(spec);
-  statusSignal(idx >= 0 ? `已更新 ${spec.label}` : `已新增 ${spec.label}`);
-  renderSignalWorkbench();
-}
-
-function signalExtractUnsigned(data, startBit, bitLength, endian) {
-  if (bitLength < 1 || bitLength > 64 || startBit < 0 || startBit + bitLength > 64) return 0n;
-  let raw = 0n;
-  if (endianToText(endian) === 'intel') {
-    for (let i = 0; i < bitLength; i++) {
-      const bitIndex = startBit + i;
-      const byteIndex = Math.floor(bitIndex / 8);
-      const bitInByte = bitIndex % 8;
-      const bit = (BigInt(data[byteIndex] || 0) >> BigInt(bitInByte)) & 1n;
-      raw |= bit << BigInt(i);
-    }
-    return raw;
-  }
-  for (let i = 0; i < bitLength; i++) {
-    const bitIndex = startBit + i;
-    const byteIndex = Math.floor(bitIndex / 8);
-    const bitInByte = 7 - (bitIndex % 8);
-    const bit = (BigInt(data[byteIndex] || 0) >> BigInt(bitInByte)) & 1n;
-    raw = (raw << 1n) | bit;
-  }
-  return raw;
-}
-
-function signalSignExtend(raw, bitLength) {
-  if (!bitLength) return 0n;
-  if (bitLength === 64) return BigInt.asIntN(64, raw);
-  const signBit = 1n << BigInt(bitLength - 1);
-  return (raw & signBit) ? (raw | (~0n << BigInt(bitLength))) : raw;
-}
-
-function decodeSignalSample(sample, spec) {
-  const rawUnsigned = signalExtractUnsigned(sample.data, spec.start_bit, spec.bit_length, spec.endian);
-  const rawSigned = spec.signed ? signalSignExtend(rawUnsigned, spec.bit_length) : rawUnsigned;
-  const raw = Number(rawSigned);
-  return {
-    rawText: rawSigned.toString(),
-    value: raw * spec.scale + spec.offset,
-  };
-}
-
-function formatValue(value) {
-  if (!Number.isFinite(value)) return '无';
-  if (Math.abs(value) >= 1000 || Math.abs(value) < 0.01) return value.toExponential(3);
-  return value.toFixed(3).replace(/\.0+$/, '').replace(/(\.\d*?)0+$/, '$1');
-}
-
-function sparklineSvg(values, display) {
-  const w = 260;
-  const h = 68;
-  if (values.length < 2) return `<svg class="sparkline" viewBox="0 0 ${w} ${h}"><text x="8" y="38">至少需要 2 个样本</text></svg>`;
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  const span = max === min ? 1 : max - min;
-  const xFor = i => (i * (w - 8)) / (values.length - 1) + 4;
-  const yFor = v => h - 6 - ((v - min) * (h - 12)) / span;
-  let points = '';
-  if (display === 'step') {
-    const step = [];
-    for (let i = 0; i < values.length; i++) {
-      const x = xFor(i);
-      const y = yFor(values[i]);
-      if (i > 0) step.push(`${x},${yFor(values[i - 1])}`);
-      step.push(`${x},${y}`);
-    }
-    points = step.join(' ');
-  } else {
-    points = values.map((v, i) => `${xFor(i)},${yFor(v)}`).join(' ');
-  }
-  return `<svg class="sparkline" viewBox="0 0 ${w} ${h}"><polyline points="${points}"/></svg>`;
-}
-
-function renderSignalSpecs() {
-  clearNode(signalSpecsEl);
-  const specs = specsForTarget();
-  signalSpecsEl.classList.toggle('empty', specs.length === 0);
-  if (!signalTarget) {
-    signalSpecsEl.textContent = '未选中目标';
-    return;
-  }
-  if (specs.length === 0) {
-    signalSpecsEl.textContent = '当前目标没有浏览器工作集规格';
-    return;
-  }
-  for (const spec of specs) {
-    const item = document.createElement('div');
-    item.className = 'signal-item';
-    const meta = document.createElement('div');
-    meta.textContent = `${spec.label} · ${endianLabel(spec.endian)}${spec.signed ? ' · 有符号' : ' · 无符号'} · 位 ${spec.start_bit}+${spec.bit_length} · 比例×${spec.scale} · 偏移 ${spec.offset} · ${displayLabel(spec.display)}`;
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.textContent = '编辑';
-    btn.onclick = () => fillSignalForm(spec);
-    item.appendChild(meta);
-    item.appendChild(btn);
-    signalSpecsEl.appendChild(item);
-  }
-}
-
-function renderSignalDecode() {
-  clearNode(signalDecodeEl);
-  const specs = specsForTarget();
-  signalDecodeEl.classList.toggle('empty', !signalTarget || specs.length === 0 || signalSamples.length === 0);
-  if (!signalTarget) {
-    signalDecodeEl.textContent = '未选中目标';
-    return;
-  }
-  if (signalSamples.length === 0) {
-    signalDecodeEl.textContent = '等待信号样本（可点击“请求候选”获取最近样本）';
-    return;
-  }
-  if (specs.length === 0) {
-    signalDecodeEl.textContent = '当前目标没有信号规格，保存手动信号后即可即时解码';
-    return;
-  }
-  for (const spec of specs) {
-    const decoded = signalSamples.map(sample => decodeSignalSample(sample, spec));
-    const values = decoded.map(d => spec.display === 'raw' ? Number(d.rawText) : d.value).filter(Number.isFinite);
-    const current = decoded[decoded.length - 1];
-    const min = values.length ? Math.min(...values) : NaN;
-    const max = values.length ? Math.max(...values) : NaN;
-    const item = document.createElement('div');
-    item.className = 'signal-item signal-decode-item';
-    const line = document.createElement('div');
-    const name = document.createElement('strong');
-    name.textContent = spec.label;
-    line.appendChild(name);
-    line.appendChild(textNode(` 当前=${formatValue(spec.display === 'raw' ? Number(current.rawText) : current.value)} 原始=${current.rawText} 最小=${formatValue(min)} 最大=${formatValue(max)} 样本=${signalSamples.length}`));
-    item.appendChild(line);
-    item.insertAdjacentHTML('beforeend', sparklineSvg(values, spec.display));
-    signalDecodeEl.appendChild(item);
-  }
-}
-
-function hintKindText(kind) {
-  if (kind === 1) return '多路复用字段';
-  if (kind === 2) return '滚动计数器';
-  if (kind === 3) return '校验候选';
-  return `类型 ${kind}`;
-}
-
-function renderSignalHints() {
-  clearNode(signalHintsEl);
-  signalHintsEl.classList.toggle('empty', signalHints.length === 0);
-  if (!signalTarget) {
-    signalHintsEl.textContent = '未选中目标';
-    return;
-  }
-  if (signalHints.length === 0) {
-    signalHintsEl.textContent = '暂无候选提示';
-    return;
-  }
-  for (const hint of signalHints) {
-    const item = document.createElement('div');
-    item.className = 'signal-item';
-    const text = document.createElement('div');
-    text.textContent = `${hintKindText(hint.kind)} · 位 ${hint.start_bit}+${hint.bit_length} · 置信度=${hint.confidence.toFixed(3)} · 依据=${hint.evidence || '-'}`;
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.textContent = '带入表单';
-    btn.onclick = () => {
-      sigStartBit.value = hint.start_bit;
-      sigBitLength.value = hint.bit_length;
-      statusSignal('候选已带入表单，尚未自动保存');
-    };
-    item.appendChild(text);
-    item.appendChild(btn);
-    signalHintsEl.appendChild(item);
-  }
-}
-
-function renderSignalWorkbench() {
-  if (signalTarget) signalTargetEl.textContent = `当前目标：${channelName(signalTarget.ch)} ${idText(signalTarget.id)}`;
-  else signalTargetEl.textContent = '未选中目标：点击实时表行或 快照/回看结果 ID 单元选择（通道,ID）';
-  signalHintsBtn.disabled = !signalTarget;
-  sigSaveBtn.disabled = !signalTarget;
-  renderSignalSpecs();
-  renderSignalDecode();
-  renderSignalHints();
-}
-
-function parseSignalSamples(buf, dv, count) {
-  if (count === 0) signalSamples = [];
-  let o = 3;
-  for (let i = 0; i < count; i++) {
-    if (o + 18 > buf.byteLength) break;
-    const ch = dv.getUint8(o); o += 1;
-    const id = dv.getUint16(o, true); o += 2;
-    const dlc = dv.getUint8(o); o += 1;
-    const data = Array.from(new Uint8Array(buf.slice(o, o + 8))); o += 8;
-    const sampleAgeMs = dv.getUint16(o, true); o += 2;
-    const sequence = dv.getUint32(o, true); o += 4;
-    if (targetMatches(signalTarget, ch, id)) signalSamples.push({ ch, id, dlc, data, sampleAgeMs, sequence });
-  }
-  signalSamples.sort((a, b) => a.sequence - b.sequence);
-  if (signalSamples.length > 96) signalSamples = signalSamples.slice(signalSamples.length - 96);
-  renderSignalDecode();
-}
-
-function parseSignalHints(buf, dv, count) {
-  signalHints = [];
-  let o = 3;
-  for (let i = 0; i < count; i++) {
-    if (o + 21 > buf.byteLength) break;
-    const kind = dv.getUint8(o); o += 1;
-    const startBit = dv.getUint8(o); o += 1;
-    const bitLength = dv.getUint8(o); o += 1;
-    const confidence = dv.getUint16(o, true) / 1000; o += 2;
-    const bytes = Array.from(new Uint8Array(buf.slice(o, o + 16))); o += 16;
-    const zero = bytes.indexOf(0);
-    const evidenceBytes = zero >= 0 ? bytes.slice(0, zero) : bytes;
-    const evidence = String.fromCharCode(...evidenceBytes);
-    signalHints.push({ kind, start_bit: startBit, bit_length: bitLength, confidence, evidence });
-  }
-  renderSignalHints();
-}
-
-function parseSignal(buf) {
-  if (buf.byteLength < 3) return;
-  const dv = new DataView(buf);
-  const subtype = dv.getUint8(1);
-  const count = dv.getUint8(2);
-  if (subtype === 1) parseSignalSamples(buf, dv, count);
-  else if (subtype === 2) parseSignalHints(buf, dv, count);
-}
-
-function exportSignalSpecs() {
-  const doc = { version: 1, exported_at: new Date().toISOString(), signals: signalSpecs };
-  const blob = new Blob([JSON.stringify(doc, null, 2)], { type: 'application/json' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = `signal-workset-${Date.now()}.json`;
-  a.click();
-  URL.revokeObjectURL(a.href);
-  statusSignal('已导出浏览器工作集 JSON');
-}
-
-function importSignalDoc(doc) {
-  if (!doc || doc.version !== 1 || !Array.isArray(doc.signals)) {
-    statusSignal('导入失败：JSON 需要包含 {version:1, signals:[...]}');
-    return false;
-  }
-  const next = [];
-  for (const item of doc.signals) {
-    const spec = normalizeSignalSpec(item, null);
-    if (!spec) {
-      statusSignal('导入失败：signals 中存在非法规格，整份已拒绝');
-      return false;
-    }
-    next.push(spec);
-  }
-  signalSpecs = next;
-  statusSignal(`已导入 ${signalSpecs.length} 条规格（替换当前浏览器工作集）`);
-  renderSignalWorkbench();
-  return true;
-}
-
-async function loadCommonSignals() {
-  try {
-    const r = await fetch('/api/p4/common');
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    const doc = await r.json();
-    const signals = Array.isArray(doc.signals) ? doc.signals : [];
-    const next = [];
-    for (const item of signals) {
-      const spec = normalizeSignalSpec({ ...item, display: item.display || 'line' }, null);
-      if (spec) next.push(spec);
-    }
-    signalSpecs = next;
-    statusSignal(`已加载设备常用项 ${signalSpecs.length} 条（替换当前浏览器工作集）`);
-    renderSignalWorkbench();
-  } catch (e) {
-    statusSignal(`加载设备常用项失败：${e.message || e}`);
-  }
-}
-
-async function saveCommonSignals() {
-  try {
-    const signals = signalSpecs.map(spec => ({
-      ch: channelName(spec.ch),
-      id: spec.id,
-      label: spec.label,
-      start_bit: spec.start_bit,
-      bit_length: spec.bit_length,
-      endian: endianToWire(spec.endian),
-      signed: spec.signed ? 1 : 0,
-      scale: spec.scale,
-      offset: spec.offset,
-    }));
-    const r = await fetch('/api/p4/common', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ signals }),
-    });
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    statusSignal(`已保存 ${signals.length} 条到设备常用项`);
-  } catch (e) {
-    statusSignal(`保存设备常用项失败：${e.message || e}`);
-  }
-}
-
-async function editLabel(rec) {
-  const key = channelIdKey(rec.ch, rec.id);
-  const current = labels.get(key) || '';
-  const next = prompt(`${channelName(rec.ch)} ${idText(rec.id)} 标注`, current);
-  if (next === null) return;
-  const text = next.trim();
-  if (text) labels.set(key, text);
-  else labels.delete(key);
-  sendCmd({ cmd: 'label_set', ch: channelName(rec.ch), id: rec.id, text });
-  repaintAll();
-}
-
 function parseDelta(buf) {
   if (freezeView.checked || buf.byteLength < 2) return;
   const dv = new DataView(buf);
@@ -1048,8 +301,7 @@ function parseDelta(buf) {
     const changeScore = dv.getUint16(o, true); o += 2;
     const flags = dv.getUint8(o); o += 1;
     const key = recordKey(ch, id);
-    const rec = { key, ch, id, dlc, data, byteAge, count: countRx, lastRx, deltaMs, periodMs, jitterMs, changeScore, flags };
-    records[key] = rec;
+    records[key] = { key, ch, id, dlc, data, byteAge, count: countRx, lastRx, deltaMs, periodMs, jitterMs, changeScore, flags };
     dirtyRecordKeys.add(key);
   }
   scheduleRecordRender();
@@ -1068,196 +320,18 @@ function parseStats(buf) {
   busStats.textContent = `A: ${fpsA} 帧/秒 ${loadA.toFixed(1)}% · B: ${fpsB} 帧/秒 ${loadB.toFixed(1)}% · 丢弃=${dropped}`;
 }
 
-function diffKindKey(kind) {
-  if (kind === 1) return 'added';
-  if (kind === 2) return 'removed';
-  if (kind === 3) return 'changed';
-  return 'unknown';
-}
-function diffKindText(kind) {
-  if (kind === 1) return '新增';
-  if (kind === 2) return '消失';
-  if (kind === 3) return '变化';
-  return `类型 ${kind}`;
-}
-
-function appendCell(tr, value, cls) {
-  const td = document.createElement('td');
-  if (cls) td.className = cls;
-  td.textContent = String(value);
-  tr.appendChild(td);
-}
-
-function appendIdWithLabel(tr, ch, id) {
-  const td = document.createElement('td');
-  td.className = 'selectable-id';
-  td.title = '选择信号工作台目标';
-  td.onclick = (ev) => { ev.stopPropagation(); selectSignalTarget(ch, id); };
-  td.appendChild(textNode(idText(id)));
-  const label = labels.get(channelIdKey(ch, id));
-  if (label) {
-    const badge = document.createElement('span');
-    badge.className = 'label-badge';
-    badge.title = label;
-    badge.textContent = label;
-    td.appendChild(badge);
-  }
-  tr.appendChild(td);
-}
-
-function renderSnapshotDiffRows() {
-  clearNode(snapshotBody);
-  const totals = { added: 0, removed: 0, changed: 0 };
-  for (const row of snapshotDiffRows) {
-    if (!passesP3Filter(row)) continue;
-    const key = diffKindKey(row.kind);
-    const text = diffKindText(row.kind);
-    if (totals[key] !== undefined) totals[key]++;
-    const tr = document.createElement('tr');
-    appendCell(tr, channelName(row.ch));
-    appendIdWithLabel(tr, row.ch, row.id);
-    appendCell(tr, text, `kind-${key}`);
-    appendCell(tr, row.dlcA);
-    appendCell(tr, dataText(row.dataA, row.dlcA));
-    appendCell(tr, row.dlcB);
-    appendCell(tr, dataText(row.dataB, row.dlcB));
-    snapshotBody.appendChild(tr);
-  }
-  snapshotSummary.textContent = `新增=${totals.added} 消失=${totals.removed} 变化=${totals.changed}`;
-}
-
-function renderPretriggerRows() {
-  clearNode(pretriggerBody);
-  let shown = 0;
-  let totalFrames = 0;
-  let totalChanges = 0;
-  const list = pretriggerRows
-    .filter(passesP3Filter)
-    .sort((a, b) => b.changes - a.changes || b.frames - a.frames || a.lastAgo - b.lastAgo || a.id - b.id);
-  for (const row of list) {
-    shown++;
-    totalFrames += row.frames;
-    totalChanges += row.changes;
-    const tr = document.createElement('tr');
-    appendCell(tr, channelName(row.ch));
-    appendIdWithLabel(tr, row.ch, row.id);
-    appendCell(tr, `${row.firstAgo}ms`);
-    appendCell(tr, `${row.lastAgo}ms`);
-    appendCell(tr, row.frames);
-    appendCell(tr, row.changes);
-    appendCell(tr, dataText(row.data, row.dlc));
-    pretriggerBody.appendChild(tr);
-  }
-  pretriggerSummary.textContent = `记录=${shown} 帧数=${totalFrames} 变化=${totalChanges}`;
-}
-
-function clearSnapshotResults() {
-  snapshotDiffRows = [];
-  scheduleSnapshotRender();
-}
-
-function clearPretriggerResults() {
-  pretriggerRows = [];
-  schedulePretriggerRender();
-}
-
-function parseDiff(buf, dv, count) {
-  let o = 3;
-  for (let i = 0; i < count; i++) {
-    if (o + 22 > buf.byteLength) break;
-    const ch = dv.getUint8(o); o += 1;
-    const id = dv.getUint16(o, true); o += 2;
-    const kind = dv.getUint8(o); o += 1;
-    const dlcA = dv.getUint8(o); o += 1;
-    const dataA = Array.from(new Uint8Array(buf.slice(o, o + 8))); o += 8;
-    const dlcB = dv.getUint8(o); o += 1;
-    const dataB = Array.from(new Uint8Array(buf.slice(o, o + 8))); o += 8;
-    snapshotDiffRows.push({ ch, id, kind, dlcA, dataA, dlcB, dataB });
-  }
-  scheduleSnapshotRender();
-}
-
-function parsePretrigger(buf, dv, count) {
-  let o = 3;
-  for (let i = 0; i < count; i++) {
-    if (o + 20 > buf.byteLength) break;
-    const ch = dv.getUint8(o); o += 1;
-    const id = dv.getUint16(o, true); o += 2;
-    const firstAgo = dv.getUint16(o, true); o += 2;
-    const lastAgo = dv.getUint16(o, true); o += 2;
-    const frames = dv.getUint16(o, true); o += 2;
-    const changes = dv.getUint16(o, true); o += 2;
-    const dlc = dv.getUint8(o); o += 1;
-    const data = Array.from(new Uint8Array(buf.slice(o, o + 8))); o += 8;
-    pretriggerRows.push({ ch, id, firstAgo, lastAgo, frames, changes, dlc, data });
-  }
-  schedulePretriggerRender();
-}
-
-
-/* ---------------------------------------------------------------------------
- * [8] 覆盖 parseBaseline：设备回包的 ID 也并入软基线，
- *     不再 hidden.add（这正是"基线后某些记录永久不显示"的根因）。
- * ------------------------------------------------------------------------- */
-function parseBaseline(buf, dv, count) {
-  let o = 3;
-  for (let i = 0; i < count; i++) {
-    if (o + 3 > buf.byteLength) break;
-    const ch = dv.getUint8(o); o += 1;
-    const id = dv.getUint16(o, true); o += 2;
-    const key = channelIdKey(ch, id);
-    const rec = records[recordKey(ch, id)];
-    if (!baselineCounts.has(key)) baselineCounts.set(key, rec ? rec.changeScore : 0);
-  }
-  focusMode.checked = true;
-  p3Status.textContent = `聚焦基线=${baselineCounts.size} 个 ID（软隐藏：变化超过阈值即自动显示）`;
-  repaintAll();
-}
-
-function parseP3(buf) {
-  if (buf.byteLength < 3) return;
-  const dv = new DataView(buf);
-  const subtype = dv.getUint8(1);
-  const count = dv.getUint8(2);
-  if (subtype === 1) parseDiff(buf, dv, count);
-  else if (subtype === 2) parsePretrigger(buf, dv, count);
-  else if (subtype === 3) parseBaseline(buf, dv, count);
-  else if (subtype === 4) loadLabels();
-}
-
 function connect() {
   ws = new WebSocket('ws://' + location.host + '/ws');
   ws.binaryType = 'arraybuffer';
-  ws.onopen = () => {
-    statusEl.textContent = 'WS：已连接';
-    if (signalTarget) sendSignalWatch(signalTarget, true);
-  };
+  ws.onopen = () => { statusEl.textContent = 'WS：已连接'; };
   ws.onclose = () => { statusEl.textContent = 'WS：断开，重连中…'; setTimeout(connect, 1000); };
   ws.onmessage = (ev) => {
     if (!(ev.data instanceof ArrayBuffer) || ev.data.byteLength === 0) return;
     const type = new DataView(ev.data).getUint8(0);
-    _wsMsg++; 
-    if (type === 0x01) _wsRec += new DataView(ev.data).getUint8(1);  
     if (type === 0x01) parseDelta(ev.data);
     if (type === 0x02) parseStats(ev.data);
-    if (type === 0x03) parseP3(ev.data);
-    if (type === 0x04) parseSignal(ev.data);
   };
 }
-
-function paintTxState() {
-  const anyTx = txState.master && ((txState.a && txState.onlineA) || (txState.b && txState.onlineB));
-  banner.className = 'banner ' + (anyTx ? 'tx' : 'listen');
-  banner.textContent = anyTx ? '可发送（至少一个通道 TX 开启）' : '只监听模式（TX 关闭）';
-  masterToggle.classList.toggle('on', txState.master);
-  txAToggle.classList.toggle('on', txState.a);
-  txBToggle.classList.toggle('on', txState.b);
-  txAToggle.disabled = !txState.onlineA;
-  txBToggle.disabled = !txState.onlineB;
-  busHealth.textContent = `CAN_A: ${txState.onlineA ? '在线' : '离线'} · CAN_B: ${txState.onlineB ? '在线' : '离线'}`;
-  updateTxSendButton();
-}
-
 function wifiModeText(mode) {
   if (mode === 'sta') return '已连接路由器（STA）';
   if (mode === 'ap') return '热点模式（AP）';
@@ -1312,235 +386,13 @@ async function postDeviceAction(path, message, button) {
   }
 }
 
-async function postTriggerArm() {
-  let payload;
-  try {
-    payload = parseTriggerArmForm();
-  } catch (err) {
-    triggerStatusEl.textContent = `触发录制布防失败：${err.message || err}`;
-    return;
-  }
-
-  triggerArmBtn.disabled = true;
-  triggerStatusEl.textContent = '触发录制：布防请求提交中…';
-  try {
-    const r = await fetch('/api/record/trigger/arm', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    const body = await r.json().catch(() => ({}));
-    if (!r.ok || body.ok === false) throw new Error(body.error || `HTTP ${r.status}`);
-    triggerPendingAction = 'arm';
-    triggerPendingText = '触发录制：布防请求已提交，等待设备状态确认…';
-    triggerStatusEl.textContent = triggerPendingText;
-    setTimeout(refreshTxBanner, 250);
-  } catch (err) {
-    triggerPendingAction = '';
-    triggerPendingText = '';
-    triggerStatusEl.textContent = `触发录制布防失败：${err.message || err}`;
-    triggerArmBtn.disabled = false;
-  }
-}
-
-async function postTriggerDisarm() {
-  triggerDisarmBtn.disabled = true;
-  triggerStatusEl.textContent = '触发录制：撤防请求提交中…';
-  try {
-    const r = await fetch('/api/record/trigger/disarm', { method: 'POST' });
-    const body = await r.json().catch(() => ({}));
-    if (!r.ok || body.ok === false) throw new Error(body.error || `HTTP ${r.status}`);
-    triggerPendingAction = 'disarm';
-    triggerPendingText = '触发录制：撤防请求已提交，等待设备状态确认…';
-    triggerStatusEl.textContent = triggerPendingText;
-    setTimeout(refreshTxBanner, 250);
-  } catch (err) {
-    triggerPendingAction = '';
-    triggerPendingText = '';
-    triggerStatusEl.textContent = `触发录制撤防失败：${err.message || err}`;
-    triggerDisarmBtn.disabled = false;
-  }
-}
-
-async function refreshTxBanner() {
+async function refreshBusHealth() {
   try {
     const r = await fetch('/api/status');
     const s = await r.json();
-    txState = {
-      master: !!s.can_tx_enabled,
-      a: !!s.tx_a_enabled,
-      b: !!s.tx_b_enabled,
-      onlineA: !!s.can_a_online,
-      onlineB: !!s.can_b_online,
-    };
-    paintTxState();
-    paintRecordStatus(s);
-    updateReplayControls(s);
-    updateTriggerControls(s);
+    busHealth.textContent = `CAN_A: ${s.can_a_online ? '在线' : '离线'} · CAN_B: ${s.can_b_online ? '在线' : '离线'}`;
   } catch (e) {}
 }
-
-function triggerModeLabel(mode) {
-  if (mode === 'new_id') return '新 ID';
-  if (mode === 'id_change') return '指定 ID 变化';
-  if (mode === 'any_change') return '任意变化';
-  return mode || '未知';
-}
-
-function triggerStateLabel(state) {
-  if (state === 'armed') return '已布防';
-  if (state === 'triggered') return '已触发';
-  if (state === 'failed') return '失败';
-  if (state === 'disarmed') return '已撤防';
-  return '空闲';
-}
-
-function updateTriggerModeInputs() {
-  const enabled = triggerMode.value === 'id_change';
-  triggerChannel.disabled = !enabled;
-  triggerId.disabled = !enabled;
-}
-
-function formatTriggerTarget(s) {
-  const mode = String(s.record_trigger_mode || '');
-  if (mode !== 'id_change') return '';
-  const ch = String(s.record_trigger_channel || '');
-  const id = Number(s.record_trigger_id);
-  if ((ch !== 'A' && ch !== 'B') || !Number.isInteger(id) || id < 0) return '';
-  return ` · 目标 ${ch} ${idText(id)}`;
-}
-
-function updateTriggerControls(s) {
-  const recording = !!s.recording;
-  const replayRunning = String(s.replay_state || 'idle') === 'running';
-  const triggerState = String(s.record_trigger_state || 'idle');
-  const triggerModeText = triggerModeLabel(String(s.record_trigger_mode || ''));
-  const triggerError = String(s.record_trigger_error || '');
-  const triggerBusy = triggerState === 'armed' || triggerState === 'triggered' || triggerState === 'failed';
-  if (triggerPendingAction === 'arm' && triggerBusy) {
-    triggerPendingAction = '';
-    triggerPendingText = '';
-  }
-  if (triggerPendingAction === 'disarm' && triggerState === 'idle') {
-    triggerPendingAction = '';
-    triggerPendingText = '';
-  }
-  updateTriggerModeInputs();
-  triggerArmBtn.disabled = recording || replayRunning || triggerBusy || !!triggerPendingAction;
-  triggerDisarmBtn.disabled = !!triggerPendingAction || !triggerBusy;
-  let text = `触发录制：${triggerStateLabel(triggerState)} · 模式 ${triggerModeText}${formatTriggerTarget(s)}`;
-  if (triggerError) text += ` · ${triggerError}`;
-  triggerStatusEl.textContent = triggerPendingText || text;
-}
-
-function replayTargetLabel(value) {
-  if (value === 'A') return '强制 CAN_A';
-  if (value === 'B') return '强制 CAN_B';
-  return '原通道';
-}
-
-function replayStateLabel(state) {
-  if (state === 'running') return '运行中';
-  if (state === 'completed') return '已完成';
-  if (state === 'stopped') return '已停止';
-  if (state === 'failed') return '失败';
-  return '空闲';
-}
-
-function updateReplayControls(s) {
-  const recording = !!s.recording;
-  const count = Number(s.record_count || 0);
-  const state = String(s.replay_state || 'idle');
-  const running = state === 'running';
-  const total = Number(s.replay_total || 0);
-  const sent = Number(s.replay_sent || 0);
-  const error = String(s.replay_error || '');
-  replayStartBtn.disabled = recording || count <= 0 || running;
-  replayStopBtn.disabled = !running;
-  let text = `回放：${replayStateLabel(state)}`;
-  if (total > 0) text += ` · ${sent}/${total}`;
-  if (error) text += ` · ${error}`;
-  replayStatusEl.textContent = text;
-}
-
-function paintRecordStatus(s) {
-  const recording = !!s.recording;
-  const count = Number(s.record_count || 0);
-  const dropped = Number(s.record_dropped || 0);
-  recordStartBtn.disabled = recording;
-  recordStopBtn.disabled = !recording;
-  if (recording) {
-    recordStatusEl.textContent = `录制中 · ${count} 帧 · 丢弃=${dropped}`;
-  } else if (count > 0) {
-    recordStatusEl.textContent = `空闲 · ${count} 帧可下载 · 丢弃=${dropped}`;
-  } else {
-    recordStatusEl.textContent = '录制：空闲';
-  }
-  const canDownload = !recording && count > 0;
-  recordDownload.classList.toggle('disabled', !canDownload);
-  recordDownloadAsc.classList.toggle('disabled', !canDownload);
-}
-
-async function loadLabels() {
-  try {
-    const r = await fetch('/api/labels');
-    const list = await r.json();
-    labels.clear();
-    for (const item of Array.isArray(list) ? list : []) {
-      const ch = item.ch === 'B' ? 'B' : 'A';
-      const id = Number(item.id);
-      const text = String(item.text || '');
-      if (Number.isFinite(id) && text) labels.set(`${ch}:${id}`, text);
-    }
-    repaintAll();
-  } catch (e) {
-    p3Status.textContent = '标注加载失败';
-  }
-}
-
-masterToggle.onclick = async () => {
-  await fetch('/api/can-tx', { method: 'POST', body: txState.master ? 'false' : 'true' });
-  refreshTxBanner();
-};
-txAToggle.onclick = async () => {
-  await fetch('/api/can-tx-a', { method: 'POST', body: txState.a ? 'false' : 'true' });
-  refreshTxBanner();
-};
-txBToggle.onclick = async () => {
-  await fetch('/api/can-tx-b', { method: 'POST', body: txState.b ? 'false' : 'true' });
-  refreshTxBanner();
-};
-txSendChannel.onchange = updateTxSendButton;
-txSendBtn.onclick = async () => {
-  let payload;
-  try {
-    payload = parseTxSendForm();
-  } catch (err) {
-    txSendStatus.textContent = `单帧发送：${err.message || err}`;
-    return;
-  }
-
-  const idLabel = `0x${payload.id.toString(16).toUpperCase().padStart(3, '0')}`;
-  if (!confirm(`将向通道 ${payload.ch} 发送 ID ${idLabel}，确认继续？`)) return;
-
-  txSendBtn.disabled = true;
-  try {
-    const r = await fetch('/api/tx/send', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    const body = await r.json().catch(() => ({}));
-    if (r.ok && body.ok) txSendStatus.textContent = `单帧发送：${payload.ch} ${idLabel} 请求已提交`;
-    else txSendStatus.textContent = `单帧发送失败：${body.error || r.status}`;
-  } catch (err) {
-    txSendStatus.textContent = `单帧发送失败：${err.message || err}`;
-  } finally {
-    await refreshTxBanner();
-    updateTxSendButton();
-  }
-};
-banner.onclick = masterToggle.onclick;
 wifiConnectBtn.onclick = connectWifi;
 wifiRefreshBtn.onclick = refreshWifiStatus;
 deviceRestartBtn.onclick = () => {
@@ -1551,119 +403,15 @@ deviceShutdownBtn.onclick = () => {
   if (confirm('确定要关机（进入深度睡眠）吗？需要按复位或重新上电恢复。'))
     postDeviceAction('/api/shutdown', '设备正在进入深度睡眠…', deviceShutdownBtn);
 };
-recordStartBtn.onclick = () => {
-  if (sendCmd({ cmd: 'record_start' })) setTimeout(refreshTxBanner, 100);
-};
-recordStopBtn.onclick = () => {
-  if (sendCmd({ cmd: 'record_stop' })) setTimeout(refreshTxBanner, 100);
-};
-replayStartBtn.onclick = async () => {
-  const target = replayTarget.value;
-  const targetText = replayTargetLabel(target);
-  if (!confirm(`将回放当前录制缓冲到${targetText}。这是多帧 CAN 发送操作，可能影响总线和设备状态，确认提交回放请求？`)) return;
-  replayStartBtn.disabled = true;
-  replayStatusEl.textContent = `回放：${targetText} 请求提交中…`;
-  let submitted = false;
-  try {
-    const r = await fetch('/api/replay/start', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ target }),
-    });
-    const body = await r.json().catch(() => ({}));
-    if (r.ok && body.ok) submitted = true;
-    else replayStatusEl.textContent = `回放启动提交失败：${body.error || r.status}`;
-  } catch (err) {
-    replayStatusEl.textContent = `回放启动提交失败：${err.message || err}`;
-  } finally {
-    await refreshTxBanner();
-    if (submitted) replayStatusEl.textContent = `回放：${targetText} 请求已提交，等待设备处理…`;
-  }
-};
-replayStopBtn.onclick = async () => {
-  replayStopBtn.disabled = true;
-  replayStatusEl.textContent = '回放：停止请求提交中…';
-  let submitted = false;
-  try {
-    const r = await fetch('/api/replay/stop', { method: 'POST' });
-    const body = await r.json().catch(() => ({}));
-    if (r.ok && body.ok) submitted = true;
-    else replayStatusEl.textContent = `回放停止提交失败：${body.error || r.status}`;
-  } catch (err) {
-    replayStatusEl.textContent = `回放停止提交失败：${err.message || err}`;
-  } finally {
-    await refreshTxBanner();
-    if (submitted) replayStatusEl.textContent = '回放：停止请求已提交，等待设备处理…';
-  }
-};
-triggerMode.onchange = updateTriggerModeInputs;
-triggerArmBtn.onclick = postTriggerArm;
-triggerDisarmBtn.onclick = postTriggerDisarm;
-recordDownload.addEventListener('click', (e) => {
-  if (recordDownload.classList.contains('disabled')) e.preventDefault();
-});
-recordDownloadAsc.addEventListener('click', (e) => {
-  if (recordDownloadAsc.classList.contains('disabled')) e.preventDefault();
-});
-baselineBtn.onclick = () => {
-  captureFocusBaseline();
-  sendCmd({ cmd: 'baseline' });
-};
-snapABtn.onclick = () => sendCmd({ cmd: 'snapshot', slot: 'A' });
-snapBBtn.onclick = () => sendCmd({ cmd: 'snapshot', slot: 'B' });
-diffBtn.onclick = () => {
-  clearSnapshotResults();
-  sendCmd({ cmd: 'diff' });
-};
-markBtn.onclick = () => {
-  clearPretriggerResults();
-  sendCmd({ cmd: 'mark' });
-};
-signalHintsBtn.onclick = () => {
-  if (!signalTarget) return;
-  signalSamples = [];
-  signalHints = [];
-  statusSignal(`请求候选 ${channelName(signalTarget.ch)} ${idText(signalTarget.id)}`);
-  renderSignalWorkbench();
-  sendCmd({ cmd: 'p4_hints', ch: channelName(signalTarget.ch), id: signalTarget.id });
-};
-sigSaveBtn.onclick = saveFormSpec;
-signalExportBtn.onclick = exportSignalSpecs;
-signalImportBtn.onclick = () => signalImportFile.click();
-signalImportFile.onchange = async () => {
-  const file = signalImportFile.files && signalImportFile.files[0];
-  signalImportFile.value = '';
-  if (!file) return;
-  try {
-    importSignalDoc(JSON.parse(await file.text()));
-  } catch (e) {
-    statusSignal(`导入失败：JSON 解析错误 ${e.message || e}`);
-  }
-};
-signalLoadCommonBtn.onclick = loadCommonSignals;
-signalSaveCommonBtn.onclick = saveCommonSignals;
 baseSelect.onchange = repaintAll;
 suppressStatic.onchange = repaintAll;
 staticSeconds.onchange = repaintAll;
 sortSelect.onchange = repaintAll;
-for (const el of [channelFilter, idFilter, rangeFrom, rangeTo, searchBox, focusMode, focusChangeThreshold, whitelistOnly]) {
+for (const el of [channelFilter, idFilter, rangeFrom, rangeTo, searchBox]) {
   el.oninput = repaintAll;
   el.onchange = repaintAll;
 }
 
-renderSignalWorkbench();
-updateTriggerModeInputs();
-connect();
-loadLabels();
-refreshWifiStatus();
-refreshTxBanner();
-setInterval(refreshTxBanner, 2000);
-
-/* ---------------------------------------------------------------------------
- * [9] 轻量周期刷新：替换掉底部那行
- *        setInterval(() => { if (!freezeView.checked) repaintAll(); }, 500);
- *     改成只刷新可见行（不再每 500ms 全量重画 + 重渲染快照/回看）。
- * ------------------------------------------------------------------------- */
 function refreshVisible() {
   if (freezeView.checked) return;
   for (const key in rows) {
@@ -1674,11 +422,7 @@ function refreshVisible() {
 }
 setInterval(refreshVisible, 500);
 
-
-const _wsHud = document.createElement('div');
-_wsHud.style.cssText = 'position:fixed;top:8px;right:8px;z-index:9999;background:rgba(0,0,0,.8);color:#0f0;font:12px/1.4 monospace;padding:6px 10px;border-radius:6px;pointer-events:none;white-space:pre';
-document.body.appendChild(_wsHud);
-setInterval(() => {
-  _wsHud.textContent = `WS 消息/秒=${_wsMsg}\n记录/秒=${_wsRec}\n${busStats.textContent}`;
-  _wsMsg = 0; _wsRec = 0;
-}, 1000);
+connect();
+refreshWifiStatus();
+refreshBusHealth();
+setInterval(refreshBusHealth, 2000);
