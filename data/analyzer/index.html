@@ -7,42 +7,6 @@
   <link rel="stylesheet" href="style.css"/>
 </head>
 <body>
-  <div id="tx-banner" class="banner listen">只监听模式（TX 关闭）</div>
-  <div class="controls">
-    <button id="master-toggle">TX 总开关</button>
-    <button id="tx-a-toggle">CAN_A 发送</button>
-    <button id="tx-b-toggle">CAN_B 发送</button>
-    <span id="bus-health">CAN_A: ? · CAN_B: ?</span>
-  </div>
-  <div class="controls tx-send-controls">
-    <label>发送通道
-      <select id="tx-send-channel">
-        <option value="A">CAN_A</option>
-        <option value="B">CAN_B</option>
-      </select>
-    </label>
-    <label>ID <input id="tx-send-id" type="text" value="0x000" inputmode="text"/></label>
-    <label>DLC <input id="tx-send-dlc" type="number" min="0" max="8" value="8"/></label>
-    <label>B0 <input class="tx-byte" id="tx-byte-0" type="text" value="00"/></label>
-    <label>B1 <input class="tx-byte" id="tx-byte-1" type="text" value="00"/></label>
-    <label>B2 <input class="tx-byte" id="tx-byte-2" type="text" value="00"/></label>
-    <label>B3 <input class="tx-byte" id="tx-byte-3" type="text" value="00"/></label>
-    <label>B4 <input class="tx-byte" id="tx-byte-4" type="text" value="00"/></label>
-    <label>B5 <input class="tx-byte" id="tx-byte-5" type="text" value="00"/></label>
-    <label>B6 <input class="tx-byte" id="tx-byte-6" type="text" value="00"/></label>
-    <label>B7 <input class="tx-byte" id="tx-byte-7" type="text" value="00"/></label>
-    <button id="tx-send-btn">发送单帧</button>
-    <span id="tx-send-status">单帧发送：待命</span>
-  </div>
-  <section class="intro-panel">
-    <h1>CAN 分析仪 · 功能介绍</h1>
-    <div class="intro-grid">
-      <div><strong>安全状态</strong><span>顶部横幅显示当前是否允许发送；默认只监听，TX 关闭时不会主动发帧。</span></div>
-      <div><strong>实时表</strong><span>按通道显示最新 CAN ID、数据、周期、抖动和活跃度，支持静态抑制与冻结查看。</span></div>
-      <div><strong>录制导出</strong><span>点击“录制开始/停止”后可下载 CSV，内容为 A+B 通道全部原始帧。</span></div>
-      <div><strong>对比与信号</strong><span>快照差异用于找操作前后变化 ID，信号工作台用于按位解析候选信号。</span></div>
-    </div>
-  </section>
   <section class="network-panel">
     <h2>网络与电源</h2>
     <div class="panel-summary">配置 WiFi 后设备会优先连接路由器；连接失败会自动回到 AP：CAN-Analyzer / 1234567890。关机为深度睡眠，需要按复位或重新上电恢复。</div>
@@ -58,57 +22,13 @@
       <span id="wifi-status">网络状态：未知</span>
     </div>
   </section>
-  <div class="controls p3-controls">
-    <button id="baseline-btn">设为基线</button>
-    <button id="snapshot-a-btn">快照 A</button>
-    <button id="snapshot-b-btn">快照 B</button>
-    <button id="diff-btn">对比差异</button>
-    <button id="mark-btn">标记回看</button>
+  <div class="controls">
+    <span id="bus-health">CAN_A: ? · CAN_B: ?</span>
     <label>通道 <select id="channel-filter"><option value="all">A+B</option><option value="A">A</option><option value="B">B</option></select></label>
     <label>ID <input id="id-filter" type="text" placeholder="0x123"/></label>
     <label>起始 <input id="range-from" type="text" placeholder="0x000"/></label>
     <label>结束 <input id="range-to" type="text" placeholder="0x7FF"/></label>
-    <label>搜索 <input id="search-box" type="text" placeholder="ID / 标注"/></label>
-    <label><input id="focus-mode" type="checkbox" checked/> 聚焦变化</label>
-    <label>变化阈值 <input id="focus-change-threshold" type="number" min="1" max="200" value="1"/></label>
-    <label><input id="whitelist-only" type="checkbox"/> 白名单优先</label>
-    <span id="p3-status"></span>
-  </div>
-  <div class="controls record-controls">
-    <button id="record-start-btn">录制开始</button>
-    <button id="record-stop-btn" disabled>录制停止</button>
-    <a id="record-download" class="record-link disabled" href="/api/record/download" download>下载 CSV</a>
-    <a id="record-download-asc" class="record-link disabled" href="/api/record/download.asc" download>下载 ASC</a>
-    <span id="record-status">录制：空闲</span>
-    <label>回放目标
-      <select id="replay-target">
-        <option value="original">原通道</option>
-        <option value="A">强制 CAN_A</option>
-        <option value="B">强制 CAN_B</option>
-      </select>
-    </label>
-    <button id="replay-start-btn" disabled>回放开始</button>
-    <button id="replay-stop-btn" disabled>回放停止</button>
-    <span id="replay-status">回放：空闲</span>
-  </div>
-  <div class="controls trigger-controls">
-    <label>触发模式
-      <select id="trigger-mode">
-        <option value="new_id">新 ID</option>
-        <option value="id_change">指定 ID 变化</option>
-        <option value="any_change">任意变化</option>
-      </select>
-    </label>
-    <label>通道
-      <select id="trigger-channel">
-        <option value="A">CAN_A</option>
-        <option value="B">CAN_B</option>
-      </select>
-    </label>
-    <label>ID <input id="trigger-id" type="text" value="0x000" inputmode="text"/></label>
-    <button id="trigger-arm-btn">触发录制布防</button>
-    <button id="trigger-disarm-btn" disabled>触发录制撤防</button>
-    <span id="trigger-status">触发录制：空闲</span>
+    <label>搜索 <input id="search-box" type="text" placeholder="ID"/></label>
   </div>
   <div class="controls">
     <label>进制 <select id="base-select"><option value="hex">HEX</option><option value="dec">DEC</option><option value="bin">BIN</option><option value="ascii">ASCII</option></select></label>
@@ -123,56 +43,6 @@
     <section><h2>CAN_A 实时表</h2><div class="panel-summary">显示 A 通道每个 ID 的最新数据、接收次数、周期估计和变化活跃度。</div><table id="tbl-a"><thead><tr><th>ID</th><th>DLC</th><th>数据</th><th>计数</th><th>Δt</th><th>周期</th><th>抖动</th><th>活跃</th></tr></thead><tbody></tbody></table></section>
     <section><h2>CAN_B 实时表</h2><div class="panel-summary">显示 B 通道每个 ID 的最新数据、接收次数、周期估计和变化活跃度。</div><table id="tbl-b"><thead><tr><th>ID</th><th>DLC</th><th>数据</th><th>计数</th><th>Δt</th><th>周期</th><th>抖动</th><th>活跃</th></tr></thead><tbody></tbody></table></section>
   </div>
-  <div class="grid p3-results">
-    <section>
-      <h2>快照差异</h2>
-      <div id="snapshot-summary" class="panel-summary">等待对比…先点击“快照 A”和“快照 B”，再点“对比差异”查找新增、消失或变化的 ID。</div>
-      <table id="snapshot-diff"><thead><tr><th>通道</th><th>ID</th><th>类型</th><th>A DLC</th><th>A 数据</th><th>B DLC</th><th>B 数据</th></tr></thead><tbody></tbody></table>
-    </section>
-    <section>
-      <h2>触发前回看</h2>
-      <div id="pretrigger-summary" class="panel-summary">等待标记…点击“标记回看”可查看最近 5 秒内各 ID 的出现时间、帧数和变化情况。</div>
-      <table id="pretrigger"><thead><tr><th>通道</th><th>ID</th><th>首见前</th><th>末见前</th><th>帧数</th><th>变更</th><th>数据</th></tr></thead><tbody></tbody></table>
-    </section>
-  </div>
-  <section class="signal-workbench">
-    <div class="workbench-head">
-      <h2>信号工作台</h2>
-      <div id="signal-target" class="panel-summary">未选中目标：点击实时表行或 快照/回看结果 ID 单元选择（通道,ID）。使用步骤：选目标 → 请求候选 → 手动保存规格 → 查看即时解码。</div>
-    </div>
-    <div class="controls workbench-controls">
-      <button id="signal-hints-btn" disabled>请求候选</button>
-      <button id="signal-export-btn">导出 JSON</button>
-      <button id="signal-import-btn">导入 JSON</button>
-      <button id="signal-load-common-btn">加载设备常用项</button>
-      <button id="signal-save-common-btn">保存到设备常用项</button>
-      <input id="signal-import-file" type="file" accept="application/json,.json" class="hidden"/>
-      <span id="signal-status">浏览器工作集=0</span>
-    </div>
-    <div class="workbench-grid">
-      <section>
-        <h3>手动信号编辑</h3>
-        <div class="signal-form">
-          <label>信号名 <input id="sig-label" type="text" placeholder="例如：车速"/></label>
-          <label>起始位 <input id="sig-start-bit" type="number" min="0" max="63" value="0"/></label>
-          <label>位长度 <input id="sig-bit-length" type="number" min="1" max="64" value="8"/></label>
-          <label>字节序 <select id="sig-endian"><option value="intel">Intel 小端</option><option value="motorola">Motorola 大端</option></select></label>
-          <label><input id="sig-signed" type="checkbox"/> 有符号</label>
-          <label>比例 <input id="sig-scale" type="number" step="any" value="1"/></label>
-          <label>偏移 <input id="sig-offset" type="number" step="any" value="0"/></label>
-          <label>显示方式 <select id="sig-display"><option value="line">折线</option><option value="step">阶梯</option><option value="raw">原始值</option></select></label>
-          <button id="sig-save-btn" disabled>保存到浏览器工作集</button>
-        </div>
-        <div id="signal-specs" class="signal-list empty">当前目标没有浏览器工作集规格</div>
-      </section>
-      <section>
-        <h3>即时解码</h3>
-        <div id="signal-decode" class="signal-list empty">等待目标、样本和规格…</div>
-        <h3>候选提示</h3>
-        <div id="signal-hints" class="signal-list empty">暂无候选提示</div>
-      </section>
-    </div>
-  </section>
   <script src="app.js"></script>
 </body>
 </html>
