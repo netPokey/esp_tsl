@@ -5,8 +5,11 @@ const busHealth = document.getElementById('bus-health');
 const busStats = document.getElementById('bus-stats');
 const statusEl = document.getElementById('status');
 const baseSelect = document.getElementById('base-select');
-const suppressStatic = document.getElementById('suppress-static');
-const staticSeconds = document.getElementById('static-seconds');
+const metricSelect = document.getElementById('metric-select');
+const metricMin = document.getElementById('metric-min');
+const metricMax = document.getElementById('metric-max');
+const filterApplyBtn = document.getElementById('filter-apply-btn');
+const idApplyBtn = document.getElementById('id-apply-btn');
 const freezeView = document.getElementById('freeze-view');
 const sortSelect = document.getElementById('sort-select');
 const channelFilter = document.getElementById('channel-filter');
@@ -27,6 +30,12 @@ const tbody = { 0: document.querySelector('#tbl-a tbody'), 1: document.querySele
 // records 保存每个 (channel,id) 的最新数据；rows 保存对应 DOM 节点引用，避免每帧重建表格。
 const rows = {};
 const records = {};
+// applied：只在点"确认"（或回车）时更新的筛选快照。通道/进制/排序仍实时生效，
+// 但 ID、起始、结束、搜索、计数/活跃度范围都从这里读取，避免边输入边重排。
+const applied = {
+  idFilter: '', rangeFrom: '', rangeTo: '', search: '',
+  metric: 'count', metricMin: '', metricMax: '',
+};
 let ws = null;
 let needSort = false;
 let sortQueued = false;
@@ -86,43 +95,45 @@ function bitHtml(rec) {
   }
   return out;
 }
-// 静态抑制：只有本 ID 当前 DLC 范围内所有字节都超过阈值未变化时才隐藏。
-function isStatic(rec) {
-  if (!suppressStatic.checked) return false;
-  const thresholdMs = Math.max(1, Number(staticSeconds.value) || 5) * 1000;
-  for (let i = 0; i < rec.dlc; i++) {
-    if (rec.byteAge[i] < thresholdMs) return false;
-  }
-  return true;
-}
 function rowClass(score) {
   if (score >= 20) return 'activity-high';
   if (score >= 5) return 'activity-med';
   return 'activity-low';
 }
 // 所有筛选都在浏览器本地完成：后端始终推送 dirty ID，前端决定是否显示。
+// 通道实时读 DOM；其余条件读 applied 快照，点"确认"后才更新。
 function passesLocalFilters(rec) {
   if (channelFilter.value === 'A' && rec.ch !== 0) return false;
   if (channelFilter.value === 'B' && rec.ch !== 1) return false;
-  const exact = parseId(idFilter.value);
-  if (idFilter.value.trim() && exact === null) return false;
+  const exact = parseId(applied.idFilter);
+  if (applied.idFilter.trim() && exact === null) return false;
   if (exact !== null && rec.id !== exact) return false;
-  const from = parseId(rangeFrom.value);
-  const to = parseId(rangeTo.value);
-  if (rangeFrom.value.trim() && from === null) return false;
-  if (rangeTo.value.trim() && to === null) return false;
+  const from = parseId(applied.rangeFrom);
+  const to = parseId(applied.rangeTo);
+  if (applied.rangeFrom.trim() && from === null) return false;
+  if (applied.rangeTo.trim() && to === null) return false;
   if (from !== null && rec.id < from) return false;
   if (to !== null && rec.id > to) return false;
-  const q = searchBox.value.trim().toLowerCase();
+  const q = applied.search.trim().toLowerCase();
   if (q) {
     const idHex = idText(rec.id).toLowerCase();
     const idBare = hex(rec.id, 3).toLowerCase();
     if (!idHex.includes(q) && !idBare.includes(q)) return false;
   }
+  // 计数 / 活跃度 范围过滤：按下拉选中的指标，取空表示该侧不限。
+  const metricVal = applied.metric === 'activity' ? rec.changeScore : rec.count;
+  if (applied.metricMin !== '') {
+    const mn = Number(applied.metricMin);
+    if (Number.isFinite(mn) && metricVal < mn) return false;
+  }
+  if (applied.metricMax !== '') {
+    const mx = Number(applied.metricMax);
+    if (Number.isFinite(mx) && metricVal > mx) return false;
+  }
   return true;
 }
 function rowHidden(rec) {
-  return isStatic(rec) || !passesLocalFilters(rec);
+  return !passesLocalFilters(rec);
 }
 // 懒创建每个 ID 的主行 + 位视图行。
 // 创建后只更新文本/样式和重排位置，避免高频 WS 下反复创建/销毁 DOM。
@@ -232,9 +243,13 @@ function sortTables() {
   for (const ch of [0, 1]) {
     const list = Object.values(records)
       .filter(r => r.ch === ch && !rowHidden(r))
-      .sort((a, b) => sortSelect.value === 'activity'
-        ? (b.changeScore - a.changeScore || a.id - b.id)
-        : (a.id - b.id));
+      .sort((a, b) => {
+        switch (sortSelect.value) {
+          case 'activity': return b.changeScore - a.changeScore || a.id - b.id;
+          case 'count':    return a.count - b.count || a.id - b.id;
+          default:         return a.id - b.id;
+        }
+      });
 
     const order = list.map(r => r.key);
     const prev = lastOrder[ch];
@@ -423,12 +438,25 @@ deviceShutdownBtn.onclick = () => {
     postDeviceAction('/api/shutdown', '设备正在进入深度睡眠…', deviceShutdownBtn);
 };
 baseSelect.onchange = repaintAll;
-suppressStatic.onchange = repaintAll;
-staticSeconds.onchange = repaintAll;
 sortSelect.onchange = repaintAll;
-for (const el of [channelFilter, idFilter, rangeFrom, rangeTo, searchBox]) {
-  el.oninput = repaintAll;
-  el.onchange = repaintAll;
+channelFilter.oninput = repaintAll;
+channelFilter.onchange = repaintAll;
+
+// 把当前输入快照进 applied 再整表重绘：ID/起始/结束/搜索、计数/活跃度范围都在此"确认"后才生效。
+function applyFilters() {
+  applied.idFilter = idFilter.value;
+  applied.rangeFrom = rangeFrom.value;
+  applied.rangeTo = rangeTo.value;
+  applied.search = searchBox.value;
+  applied.metric = metricSelect.value;
+  applied.metricMin = metricMin.value.trim();
+  applied.metricMax = metricMax.value.trim();
+  repaintAll();
+}
+filterApplyBtn.onclick = applyFilters;
+idApplyBtn.onclick = applyFilters;
+for (const el of [idFilter, rangeFrom, rangeTo, searchBox, metricMin, metricMax]) {
+  el.addEventListener('keydown', (e) => { if (e.key === 'Enter') applyFilters(); });
 }
 
 // 周期性刷新可见行的字节年龄颜色；冻结视图时完全停止刷新 DOM。

@@ -31,14 +31,17 @@
     <label>起始 <input id="range-from" type="text" placeholder="0x000"/></label>
     <label>结束 <input id="range-to" type="text" placeholder="0x7FF"/></label>
     <label>搜索 <input id="search-box" type="text" placeholder="ID"/></label>
+    <button id="id-apply-btn">确认</button>
   </div>
   <!-- 显示选项：只影响浏览器渲染，不回传设备。 -->
   <div class="controls">
     <label>进制 <select id="base-select"><option value="hex">HEX</option><option value="dec">DEC</option><option value="bin">BIN</option><option value="ascii">ASCII</option></select></label>
-    <label><input id="suppress-static" type="checkbox"/> 静态抑制</label>
-    <label>阈值 <input id="static-seconds" type="number" min="1" max="60" value="5"/> 秒</label>
+    <label>过滤 <select id="metric-select"><option value="count">计数</option><option value="activity">活跃度</option></select></label>
+    <label>最小 <input id="metric-min" type="number" min="0" placeholder="不限"/></label>
+    <label>最大 <input id="metric-max" type="number" min="0" placeholder="不限"/></label>
+    <button id="filter-apply-btn">确认</button>
     <label><input id="freeze-view" type="checkbox"/> 冻结</label>
-    <label>排序 <select id="sort-select"><option value="id">ID</option><option value="activity">活跃度</option></select></label>
+    <label>排序 <select id="sort-select"><option value="id">ID</option><option value="activity">活跃度</option><option value="count">计数↑</option></select></label>
     <span id="bus-stats">A: 0 帧/秒 0.0% · B: 0 帧/秒 0.0% · 丢弃=0</span>
   </div>
   <div id="status">WS：连接中…</div>
