@@ -1,5 +1,7 @@
+/* 最小化分析仪 UI：深色、等宽、信息密度优先；样式只覆盖实时表与网络/电源面板。 */
 * { box-sizing: border-box; font-family: ui-monospace, monospace; }
 body { margin: 0; background: #111; color: #ddd; }
+/* 顶部控制条可换行，适配窄屏时不挤压表格。 */
 .controls { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 8px 10px; background: #181818; border-bottom: 1px solid #333; }
 button, select, input { border: 1px solid #555; background: #222; color: #ddd; padding: 5px 8px; }
 button { cursor: pointer; }
@@ -14,9 +16,11 @@ section { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; font-size: 12px; min-width: 720px; }
 th, td { border: 1px solid #333; padding: 2px 5px; text-align: left; }
 h2 { margin: 4px 0; }
+/* 行背景按 change_score 分级，帮助快速定位变化活跃的 ID。 */
 tr.activity-low { background: #131d13; }
 tr.activity-med { background: #2b260d; }
 tr.activity-high { background: #331414; }
+/* 字节热度由 byte_age_ms 决定：刚变化=hot，近期变化=warm。 */
 .byte { display: inline-block; margin-right: 4px; padding: 1px 3px; border-radius: 2px; }
 .byte.hot { background: #b91c1c; color: #fff; }
 .byte.warm { background: #7c2d12; color: #fff; }

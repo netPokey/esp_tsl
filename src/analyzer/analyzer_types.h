@@ -1,8 +1,9 @@
 #pragma once
 #include <cstdint>
 
-// Core0 采集任务入队的载体：在底层 CanFrame 之上补通道与微秒时间戳。
-// 不改动底层驱动的 CanFrame，保持驱动层零侵入。
+// CAN 采集任务入队的最小载体。
+// 在底层 CanFrame 之上补通道号与微秒时间戳，既让分析层知道来源总线，
+// 又不改动 drivers/ 的通用 CanFrame 定义，保持驱动层零侵入。
 struct CapturedFrame
 {
     uint32_t id = 0;        // 标准 11-bit ID

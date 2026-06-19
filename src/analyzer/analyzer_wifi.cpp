@@ -9,12 +9,14 @@
 namespace
 {
 #if defined(ARDUINO)
+// NVS 命名空间与键名。只保存用户最后提交的 STA 凭据，AP 凭据固定写死。
 constexpr const char *kPrefsNs = "analyzer_wifi";
 constexpr const char *kPrefsSsid = "ssid";
 constexpr const char *kPrefsPass = "pass";
-constexpr const char *kApSsid = "CAN-Analyzer";
+constexpr const char *kApSsid = "tsl_can";
 constexpr const char *kApPass = "1234567890";
 constexpr unsigned long kStaTimeoutMs = 10000;
+// 尝试以 STA 模式连接路由器。同步等待最多 10 秒：setup 阶段可接受阻塞，Web 重连也在主循环中触发。
 bool trySta(const char *ssid, const char *pass)
 {
     if (!ssid || ssid[0] == 0)
@@ -27,6 +29,7 @@ bool trySta(const char *ssid, const char *pass)
     return WiFi.status() == WL_CONNECTED;
 }
 
+// 从 NVS 读取并再次走 sanitize，防止旧版本/损坏数据越界进入运行态。
 AnalyzerWifiCredentials loadCredentials()
 {
     AnalyzerWifiCredentials c;
@@ -40,6 +43,7 @@ AnalyzerWifiCredentials loadCredentials()
     return c;
 }
 
+// 保存 sanitize 后的固定缓冲；返回值用于区分 NVS 写失败与连接失败。
 bool saveCredentials(const AnalyzerWifiCredentials &c)
 {
     Preferences prefs;
@@ -53,6 +57,8 @@ bool saveCredentials(const AnalyzerWifiCredentials &c)
 #endif
 }
 
+// 纯输入校验：SSID 必填，密码可空；长度超限直接拒绝。
+// out 先清零，保证失败路径不会泄漏上一次内容。
 bool analyzerWifiSanitizeCredentials(const char *ssid, const char *pass, AnalyzerWifiCredentials &out)
 {
     memset(&out, 0, sizeof(out));
@@ -68,6 +74,7 @@ bool analyzerWifiSanitizeCredentials(const char *ssid, const char *pass, Analyze
     return true;
 }
 
+// 回退热点模式。先断开 STA 并切到 WIFI_AP，避免 AP/STA 混合状态带来 IP 显示混乱。
 void analyzerWifiStartAp()
 {
 #if defined(ARDUINO)
@@ -78,6 +85,7 @@ void analyzerWifiStartAp()
 #endif
 }
 
+// 启动策略：优先恢复上次 STA；失败后开启固定 AP，保证现场总能连回设备。
 String analyzerWifiBegin()
 {
 #if defined(ARDUINO)
@@ -91,6 +99,7 @@ String analyzerWifiBegin()
 #endif
 }
 
+// 状态端点使用的快照：同时返回当前模式/IP 与保存的凭据，方便 Web 表单回显。
 AnalyzerWifiStatus analyzerWifiStatus()
 {
     AnalyzerWifiStatus s;
@@ -109,6 +118,8 @@ AnalyzerWifiStatus analyzerWifiStatus()
     return s;
 }
 
+// Web 提交新凭据后的应用路径：先持久化，再断开旧连接并尝试 STA。
+// 即使 STA 连接失败，也会回退 AP，避免用户因输错密码失联。
 bool analyzerWifiSaveAndConnect(const char *ssid, const char *pass)
 {
 #if defined(ARDUINO)

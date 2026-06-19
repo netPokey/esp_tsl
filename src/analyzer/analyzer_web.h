@@ -5,6 +5,8 @@
 #include "analyzer/frame_queue.h"
 #include "analyzer/id_table.h"
 
+// AsyncWebServer 分片 body 边界校验：total 不能超过固定缓冲，index/len 必须落在 total 内。
+// 这些 helper 放头文件内，方便 native 单测覆盖，不把 Arduino/AsyncWebServer 拉进测试。
 inline bool analyzerWebBodyChunkIsValid(size_t index, size_t len, size_t total, size_t max_total)
 {
     return total <= max_total && index <= total && len <= (total - index);
@@ -27,6 +29,9 @@ inline bool analyzerWebBodyChunkCompletesForTest(size_t index, size_t len, size_
 }
 #endif
 
+// Web 层不创建核心对象，只保存组装点传入的队列/表/统计指针。
 void analyzerWebSetContext(FrameQueue *queue, IdTable *table, BusStatsTracker *stats);
+// 注册 HTTP/WS 路由并启动服务器。
 void analyzerWebBegin();
+// 主循环调用：消费队列、处理 pending WiFi/电源动作、按节奏推送 WS。
 void analyzerWebLoop();

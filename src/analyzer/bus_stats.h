@@ -12,7 +12,8 @@ struct BusStatsSnapshot
 };
 
 // 双通道总线负载/帧率统计器。
-// 仅消费者（Core1）调用：每帧 noteRx 累加，定期 update 结算一个窗口。
+// 仅消费者（analyzerWebLoop）调用：每帧 noteRx 累加，定期 update 结算一个窗口。
+// 这里估算的是理论线速占用率（按 500kbps 与标准帧固定开销），不是硬件错误计数。
 class BusStatsTracker
 {
 public:

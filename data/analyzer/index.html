@@ -7,6 +7,7 @@
   <link rel="stylesheet" href="style.css"/>
 </head>
 <body>
+  <!-- 网络/电源面板：只做 WiFi 配置、状态刷新、重启与深睡，不包含任何 CAN 发送控制。 -->
   <section class="network-panel">
     <h2>网络与电源</h2>
     <div class="panel-summary">配置 WiFi 后设备会优先连接路由器；连接失败会自动回到 AP：CAN-Analyzer / 1234567890。关机为深度睡眠，需要按复位或重新上电恢复。</div>
@@ -22,6 +23,7 @@
       <span id="wifi-status">网络状态：未知</span>
     </div>
   </section>
+  <!-- 本地筛选控件：后端持续推送 dirty ID，浏览器按这些条件决定显示哪些行。 -->
   <div class="controls">
     <span id="bus-health">CAN_A: ? · CAN_B: ?</span>
     <label>通道 <select id="channel-filter"><option value="all">A+B</option><option value="A">A</option><option value="B">B</option></select></label>
@@ -30,6 +32,7 @@
     <label>结束 <input id="range-to" type="text" placeholder="0x7FF"/></label>
     <label>搜索 <input id="search-box" type="text" placeholder="ID"/></label>
   </div>
+  <!-- 显示选项：只影响浏览器渲染，不回传设备。 -->
   <div class="controls">
     <label>进制 <select id="base-select"><option value="hex">HEX</option><option value="dec">DEC</option><option value="bin">BIN</option><option value="ascii">ASCII</option></select></label>
     <label><input id="suppress-static" type="checkbox"/> 静态抑制</label>
@@ -39,6 +42,7 @@
     <span id="bus-stats">A: 0 帧/秒 0.0% · B: 0 帧/秒 0.0% · 丢弃=0</span>
   </div>
   <div id="status">WS：连接中…</div>
+  <!-- A/B 两张表的 tbody 由 app.js 懒创建行节点并增量更新。 -->
   <div class="grid">
     <section><h2>CAN_A 实时表</h2><div class="panel-summary">显示 A 通道每个 ID 的最新数据、接收次数、周期估计和变化活跃度。</div><table id="tbl-a"><thead><tr><th>ID</th><th>DLC</th><th>数据</th><th>计数</th><th>Δt</th><th>周期</th><th>抖动</th><th>活跃</th></tr></thead><tbody></tbody></table></section>
     <section><h2>CAN_B 实时表</h2><div class="panel-summary">显示 B 通道每个 ID 的最新数据、接收次数、周期估计和变化活跃度。</div><table id="tbl-b"><thead><tr><th>ID</th><th>DLC</th><th>数据</th><th>计数</th><th>Δt</th><th>周期</th><th>抖动</th><th>活跃</th></tr></thead><tbody></tbody></table></section>

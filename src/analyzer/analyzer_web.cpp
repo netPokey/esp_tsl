@@ -14,18 +14,30 @@
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
 
+// ============================================================================
+// 最小 Web/WS 层：
+// - HTTP：静态文件、WiFi 配置、设备重启/深睡、通道在线状态；
+// - WS：只向浏览器推送帧增量和总线统计，不接收任何控制命令。
+// 本文件运行在 Arduino 主循环任务中；高优先级 rx_task 负责采集并写 FrameQueue。
+// AsyncWebServer 的回调可能来自网络任务，因此 WiFi/电源动作只入 pending 状态，
+// 真正执行放到 analyzerWebLoop()，避免在回调里做重启/深睡等不可重入动作。
+// ============================================================================
+
 namespace
 {
 AsyncWebServer server(80);
 AsyncWebSocket ws("/ws");
 
+// 这些对象由 can_analyzer.cpp 创建并通过 analyzerWebSetContext() 注入；Web 层不拥有其生命周期。
 FrameQueue *g_queue = nullptr;
 IdTable *g_table = nullptr;
 BusStatsTracker *g_stats = nullptr;
 
+// 每个 (channel,id) 对应一个 dirty bit。消费侧更新 IdTable 后置位，pushDelta() 发送后清位。
 constexpr uint32_t kDirtyKeys = static_cast<uint32_t>(kChannelCount) * kStdIdCount;
 uint8_t g_dirty[kDirtyKeys / 8] = {};
 
+// 1400 字节以内可避开常见 MTU 分片；单包最多 255 条记录（协议 count 为 uint8_t）。
 constexpr size_t kPushBufBytes = 1400;
 constexpr size_t kMaxWsBatchRecords = 255;
 constexpr size_t wsBatchCapacity(size_t byteCapacity)
@@ -36,9 +48,11 @@ constexpr size_t kFrameDeltaBatchCapacity = wsBatchCapacity((kPushBufBytes - 2) 
 static_assert(kFrameDeltaBatchCapacity >= 1, "frame delta batch capacity must be non-zero");
 uint32_t g_lastPushMs = 0;
 uint32_t g_lastStatsMs = 0;
+// 约 15Hz 刷新实时表，既足够顺滑，又避免浏览器 DOM 过载；统计每秒刷新一次。
 constexpr uint32_t kPushIntervalMs = 66;
 constexpr uint32_t kStatsIntervalMs = 1000;
 
+// WiFi POST 只接收 ssid/pass，256 字节足够；超限直接 400，防止 Async 回调里堆分配。
 constexpr size_t kMaxWifiJsonBytes = 256;
 constexpr uint32_t kPowerActionDelayMs = 200;
 constexpr uint32_t kShutdownSleepDelayMs = 100;
@@ -48,6 +62,8 @@ portMUX_TYPE g_powerMux = portMUX_INITIALIZER_UNLOCKED;
 AnalyzerWifiCredentials g_pendingWifi;
 volatile bool g_pendingWifiValid = false;
 
+// 电源动作分两阶段延迟执行：HTTP 回调只设置状态，主循环到点后执行。
+// ShutdownPrepare 先关闭 TX，再延迟进入深睡，让 JSON 响应有机会发回浏览器。
 enum class PendingPowerAction : uint8_t
 {
     None,
@@ -59,6 +75,7 @@ enum class PendingPowerAction : uint8_t
 volatile PendingPowerAction g_pendingPowerAction = PendingPowerAction::None;
 volatile uint32_t g_pendingPowerExecuteAfterMs = 0;
 
+// 设备网络状态 JSON。字段名与 data/analyzer/app.js 保持一一对应。
 String wifiStatusJson()
 {
     const AnalyzerWifiStatus st = analyzerWifiStatus();
@@ -73,6 +90,7 @@ String wifiStatusJson()
     return out;
 }
 
+// Async HTTP 回调里只保存待切换的 WiFi 凭据；实际保存/重连在主循环执行。
 void enqueuePendingWifi(const AnalyzerWifiCredentials &credentials)
 {
     portENTER_CRITICAL(&g_wifiMux);
@@ -95,6 +113,7 @@ bool takePendingWifi(AnalyzerWifiCredentials &credentials)
     return found;
 }
 
+// 电源动作的共享状态由 HTTP 回调写、主循环读，必须用临界区保护。
 void enqueuePendingPowerAction(PendingPowerAction action, uint32_t executeAfterMs)
 {
     portENTER_CRITICAL(&g_powerMux);
@@ -130,6 +149,7 @@ void processPendingWifi()
         analyzerWifiSaveAndConnect(credentials.ssid, credentials.pass);
 }
 
+// 主循环中的电源状态机。所有真正会断网/重启/深睡的操作都集中在这里执行。
 void processPendingPowerAction()
 {
     uint32_t executeAfterMs = 0;
@@ -144,7 +164,7 @@ void processPendingPowerAction()
         ESP.restart();
         break;
     case PendingPowerAction::ShutdownPrepare:
-        setCanTxEnabled(false);
+        setCanTxEnabled(false);  // 深睡前再次确保全局 TX 关闭，保持只监听设备的安全边界。
         enqueuePendingPowerAction(PendingPowerAction::ShutdownSleep, millis() + kShutdownSleepDelayMs);
         break;
     case PendingPowerAction::ShutdownSleep:
@@ -158,6 +178,7 @@ void processPendingPowerAction()
     }
 }
 
+// 标记某个 ID 需要推送。dirty 位只在消费侧使用，不需要跨任务同步。
 void markDirty(uint8_t channel, uint32_t id)
 {
     const uint32_t key = static_cast<uint32_t>(channel) * kStdIdCount + id;
@@ -165,6 +186,8 @@ void markDirty(uint8_t channel, uint32_t id)
         g_dirty[key >> 3] |= static_cast<uint8_t>(1u << (key & 7));
 }
 
+// 把 rx_task 入队的原始帧全部消费到 IdTable/BusStats。
+// 这是 FrameQueue 的唯一消费者；队列被 drain 后，dirty bit 记录哪些行需要推给浏览器。
 void drainQueueIntoTable()
 {
     if (!g_queue)
@@ -185,6 +208,8 @@ void drainQueueIntoTable()
     }
 }
 
+// 把内部 IdRecord 转成紧凑的 WS 二进制记录。
+// 内部以微秒保存时间，线上协议用毫秒/16-bit 表示，超出范围时饱和到 65535。
 WsFrameRecord toWire(uint8_t channel, uint32_t id, const IdRecord &record, uint64_t nowUs)
 {
     WsFrameRecord wire = {};
@@ -209,6 +234,8 @@ WsFrameRecord toWire(uint8_t channel, uint32_t id, const IdRecord &record, uint6
     return wire;
 }
 
+// 扫描 dirty 位并批量推送帧增量。
+// 只推有变化/新到达的 ID，浏览器端按 ID 覆盖更新，避免每次发送完整 4096 行表。
 void pushDelta()
 {
     if (!g_table || ws.count() == 0)
@@ -222,6 +249,7 @@ void pushDelta()
     auto flush = [&]() {
         if (batchN == 0)
             return;
+        // builder 会再次按 cap 裁剪；这里的 batchN 已按 kFrameDeltaBatchCapacity 控制。
         const size_t n = wsBuildFrameDelta(buf, sizeof(buf), batch, static_cast<uint8_t>(batchN));
         if (n > 0)
             ws.binaryAll(buf, n);
@@ -232,6 +260,7 @@ void pushDelta()
     {
         if ((g_dirty[key >> 3] & (1u << (key & 7))) == 0)
             continue;
+        // 先清位再取快照；若之后同一轮 drain 又更新同一 ID，会重新置位并在下一轮推送。
         g_dirty[key >> 3] &= static_cast<uint8_t>(~(1u << (key & 7)));
 
         const uint8_t channel = static_cast<uint8_t>(key / kStdIdCount);
@@ -243,6 +272,7 @@ void pushDelta()
     flush();
 }
 
+// 每秒推送一次总线统计。rx_err/bus_off 字段目前保留为 0，占位以保持协议布局稳定。
 void pushBusStats()
 {
     if (!g_stats || ws.count() == 0)
@@ -263,6 +293,7 @@ void pushBusStats()
 }
 }  // namespace
 
+// 注入由组装点创建的核心对象；Web 层仅保存裸指针，不负责释放。
 void analyzerWebSetContext(FrameQueue *queue, IdTable *table, BusStatsTracker *stats)
 {
     g_queue = queue;
@@ -270,10 +301,12 @@ void analyzerWebSetContext(FrameQueue *queue, IdTable *table, BusStatsTracker *s
     g_stats = stats;
 }
 
+// 注册所有 HTTP/WS 路由。当前没有任何入站 WS 命令，WebSocket 只做服务器推送。
 void analyzerWebBegin()
 {
     server.addHandler(&ws);
 
+    // 轻量状态端点：前端仅用它显示 CAN_A/CAN_B 是否初始化成功。
     server.on("/api/status", HTTP_GET, [](AsyncWebServerRequest *request) {
         String out = "{";
         out += "\"can_a_online\":" + String(isAnalyzerChannelOnline(0) ? "true" : "false");
@@ -286,6 +319,7 @@ void analyzerWebBegin()
         request->send(200, "application/json", wifiStatusJson());
     });
 
+    // AsyncWebServer 以分片方式交付 POST body；这里手动聚合到固定缓冲，避免动态分配。
     server.on("/api/wifi", HTTP_POST,
               [](AsyncWebServerRequest *) {},
               nullptr,
@@ -316,6 +350,7 @@ void analyzerWebBegin()
                       return;
                   }
                   enqueuePendingWifi(credentials);
+                  // 返回 pending：真正的保存/重连在主循环执行，响应先完成，避免连接切换打断 HTTP。
                   request->send(200, "application/json", "{\"ok\":true,\"pending\":true}");
               });
 
@@ -333,6 +368,7 @@ void analyzerWebBegin()
     server.begin();
 }
 
+// Arduino 主循环每轮调用。顺序很重要：先 drain 队列再推送，这样浏览器看到的是最新状态。
 void analyzerWebLoop()
 {
     drainQueueIntoTable();

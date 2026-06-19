@@ -1,3 +1,6 @@
+// 最小版 CAN 浏览器前端：只接收设备通过 WS 推送的帧增量/统计，
+// 本地完成表格渲染、筛选、排序、WiFi/电源面板交互；不再包含 TX/录制/回放等控制功能。
+
 const busHealth = document.getElementById('bus-health');
 const busStats = document.getElementById('bus-stats');
 const statusEl = document.getElementById('status');
@@ -21,6 +24,7 @@ const deviceRestartBtn = document.getElementById('device-restart-btn');
 const deviceShutdownBtn = document.getElementById('device-shutdown-btn');
 const wifiStatus = document.getElementById('wifi-status');
 const tbody = { 0: document.querySelector('#tbl-a tbody'), 1: document.querySelector('#tbl-b tbody') };
+// records 保存每个 (channel,id) 的最新数据；rows 保存对应 DOM 节点引用，避免每帧重建表格。
 const rows = {};
 const records = {};
 let ws = null;
@@ -31,6 +35,7 @@ let fullRecordRenderQueued = false;
 const dirtyRecordKeys = new Set();
 const lastOrder = { 0: [], 1: [] };
 
+// 只在文本变化时写 DOM，降低高频刷新时的 layout/repaint 压力。
 function setText(node, value) {
   const v = String(value);
   if (node.textContent !== v) node.textContent = v;
@@ -40,6 +45,7 @@ function printable(b) { return b >= 32 && b <= 126 ? String.fromCharCode(b) : '.
 function recordKey(ch, id) { return ch * 4096 + id; }
 function idText(id) { return '0x' + hex(id, 3); }
 
+// 支持十进制或 0x 前缀十六进制输入；筛选框解析失败时不抛到 UI，而是让过滤条件不匹配。
 function parseBoundedIntText(text, max) {
   const raw = String(text || '').trim();
   if (!raw) throw new Error('请输入数值');
@@ -80,6 +86,7 @@ function bitHtml(rec) {
   }
   return out;
 }
+// 静态抑制：只有本 ID 当前 DLC 范围内所有字节都超过阈值未变化时才隐藏。
 function isStatic(rec) {
   if (!suppressStatic.checked) return false;
   const thresholdMs = Math.max(1, Number(staticSeconds.value) || 5) * 1000;
@@ -93,6 +100,7 @@ function rowClass(score) {
   if (score >= 5) return 'activity-med';
   return 'activity-low';
 }
+// 所有筛选都在浏览器本地完成：后端始终推送 dirty ID，前端决定是否显示。
 function passesLocalFilters(rec) {
   if (channelFilter.value === 'A' && rec.ch !== 0) return false;
   if (channelFilter.value === 'B' && rec.ch !== 1) return false;
@@ -116,6 +124,8 @@ function passesLocalFilters(rec) {
 function rowHidden(rec) {
   return isStatic(rec) || !passesLocalFilters(rec);
 }
+// 懒创建每个 ID 的主行 + 位视图行。
+// 创建后只更新文本/样式和重排位置，避免高频 WS 下反复创建/销毁 DOM。
 function ensureRows(rec) {
   const key = rec.key;
   if (rows[key]) return rows[key];
@@ -179,6 +189,7 @@ function ensureRows(rec) {
   needSort = true;
   return rows[key];
 }
+// 根据一条记录增量更新已有 DOM。隐藏行不刷新内容，节省不可见行的渲染成本。
 function paintRecord(rec) {
   const pair = ensureRows(rec);
   const tr = pair.tr;
@@ -216,6 +227,7 @@ function paintRecord(rec) {
   if (!pair.bit.classList.contains('hidden')) pair.bitTd.innerHTML = bitHtml(rec);
 }
 
+// 排序只在顺序真的变化时移动 DOM。用 DocumentFragment 一次性重排，减少 reflow 次数。
 function sortTables() {
   for (const ch of [0, 1]) {
     const list = Object.values(records)
@@ -252,6 +264,7 @@ function scheduleSort() {
   setTimeout(() => { sortQueued = false; sortTables(); }, 300);
 }
 
+// 渲染调度合并到 requestAnimationFrame：WS 可以高频到达，但 DOM 每帧最多刷一次。
 function scheduleRecordRender(full = false) {
   if (full) fullRecordRenderQueued = true;
   if (recordRenderQueued) return;
@@ -279,6 +292,7 @@ function repaintAll() {
   scheduleRecordRender(true);
   scheduleSort();
 }
+// 解析 WS_MSG_FRAME_DELTA。每条 WsFrameRecord 固定 45 字节，字段顺序必须与 ws_protocol.h 保持一致。
 function parseDelta(buf) {
   if (freezeView.checked || buf.byteLength < 2) return;
   const dv = new DataView(buf);
@@ -286,7 +300,7 @@ function parseDelta(buf) {
   if (dv.getUint8(o++) !== 0x01) return;
   const count = dv.getUint8(o++);
   for (let i = 0; i < count; i++) {
-    if (o + 45 > buf.byteLength) return;
+    if (o + 45 > buf.byteLength) return;  // 半包/损坏包直接丢弃，等待下一条完整 WS 消息。
     const ch = dv.getUint8(o); o += 1;
     const id = dv.getUint16(o, true); o += 2;
     const dlc = dv.getUint8(o); o += 1;
@@ -307,6 +321,7 @@ function parseDelta(buf) {
   scheduleRecordRender();
 }
 
+// 解析 WS_MSG_BUS_STATS。中间 10 字节为后端保留的 rx_err/bus_off 占位字段。
 function parseStats(buf) {
   if (buf.byteLength < 23) return;
   const dv = new DataView(buf);
@@ -320,6 +335,7 @@ function parseStats(buf) {
   busStats.textContent = `A: ${fpsA} 帧/秒 ${loadA.toFixed(1)}% · B: ${fpsB} 帧/秒 ${loadB.toFixed(1)}% · 丢弃=${dropped}`;
 }
 
+// 建立只读 WS 连接；断线后 1 秒重连。前端不再向设备发送任何 WS 命令。
 function connect() {
   ws = new WebSocket('ws://' + location.host + '/ws');
   ws.binaryType = 'arraybuffer';
@@ -338,6 +354,7 @@ function wifiModeText(mode) {
   return '无线已关闭';
 }
 
+// 从设备读取当前网络模式/IP 与已保存凭据，用于面板回显。
 async function refreshWifiStatus() {
   try {
     const r = await fetch('/api/wifi');
@@ -353,6 +370,7 @@ async function refreshWifiStatus() {
   }
 }
 
+// 提交新 STA 凭据。后端返回 pending 后会在主循环里保存并切网，当前页面可能短暂失联。
 async function connectWifi() {
   wifiConnectBtn.disabled = true;
   wifiStatus.textContent = '正在连接 WiFi…';
@@ -374,6 +392,7 @@ async function connectWifi() {
   }
 }
 
+// 重启/关机是不可逆的本次会话动作：点击前二次确认，提交后按钮保持禁用。
 async function postDeviceAction(path, message, button) {
   if (button) button.disabled = true;
   try {
@@ -412,6 +431,7 @@ for (const el of [channelFilter, idFilter, rangeFrom, rangeTo, searchBox]) {
   el.onchange = repaintAll;
 }
 
+// 周期性刷新可见行的字节年龄颜色；冻结视图时完全停止刷新 DOM。
 function refreshVisible() {
   if (freezeView.checked) return;
   for (const key in rows) {

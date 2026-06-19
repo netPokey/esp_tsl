@@ -4,7 +4,7 @@
 #include "shared_types.h"
 
 // 单生产者单消费者（SPSC）无锁环形队列。
-// 生产者：Core0 采集任务（push）。消费者：Core1 分析循环（pop）。
+// 生产者：Core1 高优先级 CAN 采集任务（push）。消费者：Arduino loop/Web 分析循环（pop）。
 // 缓冲由调用方提供：测试用栈/堆，设备用 PSRAM。可用容量为 capacity-1。
 class FrameQueue
 {
