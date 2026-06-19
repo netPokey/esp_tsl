@@ -117,17 +117,21 @@ public:
 
     bool read(CanFrame &frame) override
     {
-        if (!driverReady_ || !controller_.checkReceive())
+        if (!driverReady_)
             return false;
-
+        if (!controller_.checkReceive())
+        {
+            noteRxError();          // 缓冲已排空，顺手检查一次溢出/错误
+            return false;
+        }
+    
         struct can_frame rawFrame = {};
         if (controller_.readMessage(&rawFrame) != MCP2515::ERROR_OK)
         {
-            if (controller_.checkError())
-                controller_.clearRXnOVRFlags();
+            noteRxError();
             return false;
         }
-
+        // …以下 parse 部分保持原样…
         const bool isExtendedFrame = (rawFrame.can_id & CAN_EFF_FLAG) != 0;
         frame.id = rawFrame.can_id & (isExtendedFrame ? CAN_EFF_MASK : CAN_SFF_MASK);
         frame.dlc = (rawFrame.can_dlc <= 8) ? rawFrame.can_dlc : 8;
@@ -135,6 +139,8 @@ public:
         memcpy(frame.data, rawFrame.data, frame.dlc);
         return true;
     }
+
+    
 
     void send(const CanFrame &frame) override
     {
@@ -149,6 +155,11 @@ public:
         if (controller_.sendMessage(&rawFrame) != MCP2515::ERROR_OK && controller_.checkError())
             controller_.clearTXInterrupts();
     }
+
+    // 供统计层读取的累计溢出/错误事件数。注意：MCP2515 不记丢帧数，只有 sticky 标志，
+    // 故这是"事件次数"而非精确丢帧，会低估真实丢失，但足以暴露 CAN_A 正在丢。
+    // rx_task 写、loop 读：单个对齐 uint32_t 在 32 位上是原子读写，对显示用计数足够。
+    uint32_t rxOverflowCount() const { return rxOverflowCount_; }
 
 private:
     // 第三方库提供的 MCP2515 控制器对象。
@@ -178,4 +189,17 @@ private:
 
     // 当前驱动是否已经初始化成功并可继续读写。
     bool driverReady_ = false;
+
+
+    void noteRxError()
+    {
+        const bool err = controller_.checkError();
+        if (err && !lastRxError_)
+            ++rxOverflowCount_;
+        lastRxError_ = err;
+        if (err)
+            controller_.clearRXnOVRFlags();
+    }
+    uint32_t rxOverflowCount_ = 0;
+    bool lastRxError_ = false;
 };

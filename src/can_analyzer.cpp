@@ -102,6 +102,10 @@ void setup()
 // Arduino 主循环负责 Web 服务与队列消费；高优先级 rx_task 会抢占它完成 CAN 入队。
 void loop()
 {
+    // 把驱动层累计的硬件丢帧喂给统计：CAN_A=MCP2515 溢出事件，CAN_B=TWAI rx_missed。
+    g_stats.setHwDrops(
+    g_canA ? g_canA->rxOverflowCount() : 0,
+    g_canB ? g_canB->getDiagnostics().rxMissed : 0);
     analyzerWebLoop();
     delay(1);
 }

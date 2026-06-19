@@ -1,6 +1,11 @@
 #include "analyzer/ws_protocol.h"
 #include <cstring>
 
+// 线协议尺寸是前端 parseDelta()/parseStats() 的硬编码偏移依赖；这里编译期锁死，
+// 一旦有人改字段或对齐导致尺寸漂移，立刻在编译期暴露而不是上线后解析错位。
+static_assert(sizeof(WsFrameRecord) == 45, "WsFrameRecord 必须是 45 字节，与 app.js parseDelta 一致");
+static_assert(sizeof(WsBusStats) == 22, "WsBusStats 必须是 22 字节，与 app.js parseStats 一致");
+
 // 输出格式：[0]=WS_MSG_FRAME_DELTA, [1]=实际记录数, 后续为连续 WsFrameRecord。
 // 若缓冲不够 count 条，自动裁剪到能放下的条数，避免调用方重复计算边界。
 size_t wsBuildFrameDelta(uint8_t *buf, size_t cap, const WsFrameRecord *recs, uint8_t count)

@@ -30,11 +30,13 @@ const tbody = { 0: document.querySelector('#tbl-a tbody'), 1: document.querySele
 // records 保存每个 (channel,id) 的最新数据；rows 保存对应 DOM 节点引用，避免每帧重建表格。
 const rows = {};
 const records = {};
-// applied：只在点"确认"（或回车）时更新的筛选快照。通道/进制/排序仍实时生效，
-// 但 ID、起始、结束、搜索、计数/活跃度范围都从这里读取，避免边输入边重排。
-const applied = {
-  idFilter: '', rangeFrom: '', rangeTo: '', search: '',
-  metric: 'count', metricMin: '', metricMax: '',
+// flt：预编译的筛选条件，只在 applyFilters()（点确认/回车）时算一次。
+// passesLocalFilters 每行只做数值比较，不再每帧重复正则解析 ID 文本。
+// invalid=true 表示 ID/起始/结束 任一非空但解析失败 —— 此时全部隐藏（沿用原行为）。
+const flt = {
+  idExact: null, rangeFrom: null, rangeTo: null,
+  search: '', invalid: false,
+  metricIsActivity: false, metricMin: null, metricMax: null,
 };
 let ws = null;
 let needSort = false;
@@ -101,35 +103,22 @@ function rowClass(score) {
   return 'activity-low';
 }
 // 所有筛选都在浏览器本地完成：后端始终推送 dirty ID，前端决定是否显示。
-// 通道实时读 DOM；其余条件读 applied 快照，点"确认"后才更新。
+// 通道实时读 DOM；其余条件读 flt 预编译值，点"确认"后才更新。
 function passesLocalFilters(rec) {
   if (channelFilter.value === 'A' && rec.ch !== 0) return false;
   if (channelFilter.value === 'B' && rec.ch !== 1) return false;
-  const exact = parseId(applied.idFilter);
-  if (applied.idFilter.trim() && exact === null) return false;
-  if (exact !== null && rec.id !== exact) return false;
-  const from = parseId(applied.rangeFrom);
-  const to = parseId(applied.rangeTo);
-  if (applied.rangeFrom.trim() && from === null) return false;
-  if (applied.rangeTo.trim() && to === null) return false;
-  if (from !== null && rec.id < from) return false;
-  if (to !== null && rec.id > to) return false;
-  const q = applied.search.trim().toLowerCase();
-  if (q) {
+  if (flt.invalid) return false;
+  if (flt.idExact !== null && rec.id !== flt.idExact) return false;
+  if (flt.rangeFrom !== null && rec.id < flt.rangeFrom) return false;
+  if (flt.rangeTo !== null && rec.id > flt.rangeTo) return false;
+  if (flt.search) {
     const idHex = idText(rec.id).toLowerCase();
     const idBare = hex(rec.id, 3).toLowerCase();
-    if (!idHex.includes(q) && !idBare.includes(q)) return false;
+    if (!idHex.includes(flt.search) && !idBare.includes(flt.search)) return false;
   }
-  // 计数 / 活跃度 范围过滤：按下拉选中的指标，取空表示该侧不限。
-  const metricVal = applied.metric === 'activity' ? rec.changeScore : rec.count;
-  if (applied.metricMin !== '') {
-    const mn = Number(applied.metricMin);
-    if (Number.isFinite(mn) && metricVal < mn) return false;
-  }
-  if (applied.metricMax !== '') {
-    const mx = Number(applied.metricMax);
-    if (Number.isFinite(mx) && metricVal > mx) return false;
-  }
+  const metricVal = flt.metricIsActivity ? rec.changeScore : rec.count;
+  if (flt.metricMin !== null && metricVal < flt.metricMin) return false;
+  if (flt.metricMax !== null && metricVal > flt.metricMax) return false;
   return true;
 }
 function rowHidden(rec) {
@@ -201,10 +190,11 @@ function ensureRows(rec) {
   return rows[key];
 }
 // 根据一条记录增量更新已有 DOM。隐藏行不刷新内容，节省不可见行的渲染成本。
-function paintRecord(rec) {
+// hiddenRow 可由调用方传入（已算过），省去一次 rowHidden/筛选计算。
+function paintRecord(rec, hiddenRow) {
   const pair = ensureRows(rec);
   const tr = pair.tr;
-  const hiddenRow = rowHidden(rec);
+  if (hiddenRow === undefined) hiddenRow = rowHidden(rec);
 
   const cls = rowClass(rec.changeScore);
   if (cls !== pair.lastClass) { tr.className = cls; pair.lastClass = cls; }
@@ -289,12 +279,15 @@ function scheduleRecordRender(full = false) {
     if (fullRecordRenderQueued) {
       fullRecordRenderQueued = false;
       for (const rec of Object.values(records)) {
-        if (rows[rec.key] || !rowHidden(rec)) paintRecord(rec);
+        const hidden = rowHidden(rec);
+        if (rows[rec.key] || !hidden) paintRecord(rec, hidden);
       }
     } else {
       for (const key of dirtyRecordKeys) {
         const rec = records[key];
-        if (rec && (rows[key] || !rowHidden(rec))) paintRecord(rec);
+        if (!rec) continue;
+        const hidden = rowHidden(rec);
+        if (rows[key] || !hidden) paintRecord(rec, hidden);
       }
     }
     dirtyRecordKeys.clear();
@@ -308,6 +301,7 @@ function repaintAll() {
   scheduleSort();
 }
 // 解析 WS_MSG_FRAME_DELTA。每条 WsFrameRecord 固定 45 字节，字段顺序必须与 ws_protocol.h 保持一致。
+// 高频场景下原地复用 records[key] 及其 data/byteAge 数组，避免每条记录产生新对象/新数组的 GC 压力。
 function parseDelta(buf) {
   if (freezeView.checked || buf.byteLength < 2) return;
   const dv = new DataView(buf);
@@ -318,19 +312,24 @@ function parseDelta(buf) {
     if (o + 45 > buf.byteLength) return;  // 半包/损坏包直接丢弃，等待下一条完整 WS 消息。
     const ch = dv.getUint8(o); o += 1;
     const id = dv.getUint16(o, true); o += 2;
-    const dlc = dv.getUint8(o); o += 1;
-    const data = Array.from(new Uint8Array(buf.slice(o, o + 8))); o += 8;
-    const lastRx = dv.getUint32(o, true); o += 4;
-    const byteAge = [];
-    for (let b = 0; b < 8; b++) { byteAge.push(dv.getUint16(o, true)); o += 2; }
-    const countRx = dv.getUint32(o, true); o += 4;
-    const deltaMs = dv.getUint16(o, true); o += 2;
-    const periodMs = dv.getUint16(o, true); o += 2;
-    const jitterMs = dv.getUint16(o, true); o += 2;
-    const changeScore = dv.getUint16(o, true); o += 2;
-    const flags = dv.getUint8(o); o += 1;
     const key = recordKey(ch, id);
-    records[key] = { key, ch, id, dlc, data, byteAge, count: countRx, lastRx, deltaMs, periodMs, jitterMs, changeScore, flags };
+    let rec = records[key];
+    if (!rec) {
+      rec = { key, ch, id, dlc: 0, data: new Array(8).fill(0), byteAge: new Array(8).fill(0),
+        count: 0, lastRx: 0, deltaMs: 0, periodMs: 0, jitterMs: 0, changeScore: 0, flags: 0 };
+      records[key] = rec;
+    }
+    rec.dlc = dv.getUint8(o); o += 1;
+    for (let b = 0; b < 8; b++) rec.data[b] = dv.getUint8(o + b);
+    o += 8;
+    rec.lastRx = dv.getUint32(o, true); o += 4;
+    for (let b = 0; b < 8; b++) { rec.byteAge[b] = dv.getUint16(o, true); o += 2; }
+    rec.count = dv.getUint32(o, true); o += 4;
+    rec.deltaMs = dv.getUint16(o, true); o += 2;
+    rec.periodMs = dv.getUint16(o, true); o += 2;
+    rec.jitterMs = dv.getUint16(o, true); o += 2;
+    rec.changeScore = dv.getUint16(o, true); o += 2;
+    rec.flags = dv.getUint8(o); o += 1;
     dirtyRecordKeys.add(key);
   }
   scheduleRecordRender();
@@ -442,15 +441,24 @@ sortSelect.onchange = repaintAll;
 channelFilter.oninput = repaintAll;
 channelFilter.onchange = repaintAll;
 
-// 把当前输入快照进 applied 再整表重绘：ID/起始/结束/搜索、计数/活跃度范围都在此"确认"后才生效。
+// 点确认/回车时把输入预编译进 flt（解析只在这里做一次），再整表重绘。
 function applyFilters() {
-  applied.idFilter = idFilter.value;
-  applied.rangeFrom = rangeFrom.value;
-  applied.rangeTo = rangeTo.value;
-  applied.search = searchBox.value;
-  applied.metric = metricSelect.value;
-  applied.metricMin = metricMin.value.trim();
-  applied.metricMax = metricMax.value.trim();
+  const idExact = parseId(idFilter.value);
+  const from = parseId(rangeFrom.value);
+  const to = parseId(rangeTo.value);
+  flt.invalid =
+    (idFilter.value.trim() !== '' && idExact === null) ||
+    (rangeFrom.value.trim() !== '' && from === null) ||
+    (rangeTo.value.trim() !== '' && to === null);
+  flt.idExact = idExact;
+  flt.rangeFrom = from;
+  flt.rangeTo = to;
+  flt.search = searchBox.value.trim().toLowerCase();
+  flt.metricIsActivity = metricSelect.value === 'activity';
+  const mn = Number(metricMin.value);
+  const mx = Number(metricMax.value);
+  flt.metricMin = (metricMin.value.trim() !== '' && Number.isFinite(mn)) ? mn : null;
+  flt.metricMax = (metricMax.value.trim() !== '' && Number.isFinite(mx)) ? mx : null;
   repaintAll();
 }
 filterApplyBtn.onclick = applyFilters;
@@ -464,7 +472,9 @@ function refreshVisible() {
   if (freezeView.checked) return;
   for (const key in rows) {
     const rec = records[key];
-    if (rec && !rowHidden(rec)) paintRecord(rec);
+    if (!rec) continue;
+    const hidden = rowHidden(rec);
+    if (!hidden) paintRecord(rec, hidden);
   }
   scheduleSort();
 }

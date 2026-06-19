@@ -51,6 +51,10 @@ uint32_t g_lastStatsMs = 0;
 // 约 15Hz 刷新实时表，既足够顺滑，又避免浏览器 DOM 过载；统计每秒刷新一次。
 constexpr uint32_t kPushIntervalMs = 66;
 constexpr uint32_t kStatsIntervalMs = 1000;
+// 单轮 pushDelta 最多发送的 WS 帧数。即便大量 ID 同时 dirty（如首个客户端刚连上，
+// 此前积累的 dirty 位会一次性全部待发），也不会一口气塞爆 AsyncWebSocket 的发送队列
+// （ESP32Async 默认 WS_MAX_QUEUED_MESSAGES=32）；超出的 dirty 位保留，下一轮继续发。
+constexpr size_t kMaxFlushesPerPush = 16;
 
 // WiFi POST 只接收 ssid/pass，256 字节足够；超限直接 400，防止 Async 回调里堆分配。
 constexpr size_t kMaxWifiJsonBytes = 256;
@@ -240,10 +244,16 @@ void pushDelta()
 {
     if (!g_table || ws.count() == 0)
         return;
+    // 背压保护：任一客户端的发送队列已满时整轮跳过，且不触碰 dirty 位。
+    // delta 是"最新值覆盖"语义，丢掉中间一轮无害；dirty 位保留到客户端追上后再发，
+    // 避免在拥塞客户端上无限堆积 WS 消息、耗尽堆内存。
+    if (!ws.availableForWriteAll())
+        return;
 
     static uint8_t buf[kPushBufBytes];
     static WsFrameRecord batch[kFrameDeltaBatchCapacity];
     size_t batchN = 0;
+    size_t flushes = 0;
     const uint64_t nowUs = static_cast<uint64_t>(esp_timer_get_time());
 
     auto flush = [&]() {
@@ -252,7 +262,10 @@ void pushDelta()
         // builder 会再次按 cap 裁剪；这里的 batchN 已按 kFrameDeltaBatchCapacity 控制。
         const size_t n = wsBuildFrameDelta(buf, sizeof(buf), batch, static_cast<uint8_t>(batchN));
         if (n > 0)
+        {
             ws.binaryAll(buf, n);
+            ++flushes;
+        }
         batchN = 0;
     };
 
@@ -260,6 +273,9 @@ void pushDelta()
     {
         if ((g_dirty[key >> 3] & (1u << (key & 7))) == 0)
             continue;
+        // 到达单轮发送预算就停下：当前 key 及之后的 dirty 位保持置位（尚未清位），下一轮继续。
+        if (flushes >= kMaxFlushesPerPush)
+            break;
         // 先清位再取快照；若之后同一轮 drain 又更新同一 ID，会重新置位并在下一轮推送。
         g_dirty[key >> 3] &= static_cast<uint8_t>(~(1u << (key & 7)));
 

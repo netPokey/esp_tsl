@@ -8,6 +8,7 @@ struct BusStatsSnapshot
 {
     uint16_t fps[kChannelCount] = {};       // 每通道每秒帧数
     uint16_t load_x10[kChannelCount] = {};  // 每通道总线占用率%×10
+    uint32_t hw_drops[kChannelCount] = {};  // 新增：A=MCP2515 溢出事件, B=TWAI rx_missed
     uint32_t dropped = 0;                   // 队列累计丢帧
 };
 
@@ -72,6 +73,22 @@ public:
         return s;
     }
 
+        // 由消费侧(loop)每轮喂入驱动层累计硬件丢帧，随快照下发。
+    void setHwDrops(uint32_t chA, uint32_t chB)
+    {
+        hwDrops_[0] = chA;
+        hwDrops_[1] = chB;
+    }
+
+    BusStatsSnapshot snapshot() const
+    {
+        BusStatsSnapshot s = snapshot_;
+        s.dropped = dropped_;
+        s.hw_drops[0] = hwDrops_[0];   // 新增
+        s.hw_drops[1] = hwDrops_[1];   // 新增
+        return s;
+    }
+
 private:
     static constexpr uint32_t kWindowMs = 1000;
 
@@ -80,4 +97,5 @@ private:
     uint32_t bits_[kChannelCount] = {};
     uint32_t dropped_ = 0;
     BusStatsSnapshot snapshot_;
+    uint32_t hwDrops_[kChannelCount] = {};   // 新增成员
 };
