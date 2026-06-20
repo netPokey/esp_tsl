@@ -27,9 +27,16 @@ const deviceRestartBtn = document.getElementById('device-restart-btn');
 const deviceShutdownBtn = document.getElementById('device-shutdown-btn');
 const wifiStatus = document.getElementById('wifi-status');
 const tbody = { 0: document.querySelector('#tbl-a tbody'), 1: document.querySelector('#tbl-b tbody') };
+const hideSelectedBtn = document.getElementById('hide-selected-btn');
+const unhideAllBtn = document.getElementById('unhide-all-btn');
+const hiddenInfo = document.getElementById('hidden-info');
+const hiddenList = document.getElementById('hidden-list');
+const selectAll = { 0: document.getElementById('select-all-a'), 1: document.getElementById('select-all-b') };
 // records 保存每个 (channel,id) 的最新数据；rows 保存对应 DOM 节点引用，避免每帧重建表格。
 const rows = {};
 const records = {};
+// hiddenKeys：用户手动隐藏的 (channel,id) 拒绝列表，与筛选控件相互独立。键 = recordKey(ch,id)。
+const hiddenKeys = new Set();
 // flt：预编译的筛选条件，只在 applyFilters()（点确认/回车）时算一次。
 // passesLocalFilters 每行只做数值比较，不再每帧重复正则解析 ID 文本。
 // invalid=true 表示 ID/起始/结束 任一非空但解析失败 —— 此时全部隐藏（沿用原行为）。
@@ -122,7 +129,7 @@ function passesLocalFilters(rec) {
   return true;
 }
 function rowHidden(rec) {
-  return !passesLocalFilters(rec);
+  return hiddenKeys.has(rec.key) || !passesLocalFilters(rec);
 }
 // 懒创建每个 ID 的主行 + 位视图行。
 // 创建后只更新文本/样式和重排位置，避免高频 WS 下反复创建/销毁 DOM。
@@ -135,7 +142,7 @@ function ensureRows(rec) {
   bit.className = 'bit-view hidden';
   bit.dataset.manualHidden = '1';
   const bitTd = document.createElement('td');
-  bitTd.colSpan = 8;
+  bitTd.colSpan = 9;  // 新增了行末的勾选列
   bit.appendChild(bitTd);
 
   const idTd = document.createElement('td');
@@ -161,6 +168,14 @@ function ensureRows(rec) {
   const jitterTd = document.createElement('td');
   const scoreTd = document.createElement('td');
 
+  // 行末勾选列：勾选后可被"隐藏所选"收集。点勾选框不触发整行的位视图展开。
+  const selTd = document.createElement('td');
+  selTd.className = 'sel-col';
+  const cb = document.createElement('input');
+  cb.type = 'checkbox';
+  cb.onclick = (e) => e.stopPropagation();
+  selTd.appendChild(cb);
+
   tr.appendChild(idTd);
   tr.appendChild(dlcTd);
   tr.appendChild(dataTd);
@@ -169,6 +184,7 @@ function ensureRows(rec) {
   tr.appendChild(periodTd);
   tr.appendChild(jitterTd);
   tr.appendChild(scoreTd);
+  tr.appendChild(selTd);
 
   tr.onclick = () => {
     const hiddenNow = bit.classList.toggle('hidden');
@@ -180,7 +196,7 @@ function ensureRows(rec) {
   };
 
   rows[key] = {
-    tr, bit, bitTd, byteSpans,
+    tr, bit, bitTd, byteSpans, cb, key,
     dlcTd, countTd, deltaTd, periodTd, jitterTd, scoreTd,
     lastClass: '',
   };
@@ -344,9 +360,13 @@ function parseStats(buf) {
   const fpsB = dv.getUint16(o, true); o += 2;
   const loadA = dv.getUint16(o, true) / 10; o += 2;
   const loadB = dv.getUint16(o, true) / 10; o += 2;
-  o += 4 + 4 + 1 + 1;
+  const errA = dv.getUint32(o, true); o += 4;  // rx_err_a：CAN_A(MCP2515) 溢出/错误事件数（低估真实丢帧）
+  const errB = dv.getUint32(o, true); o += 4;  // rx_err_b：CAN_B(TWAI) rx_missed_count（精确丢帧数）
+  o += 1 + 1;  // bus_off_a / bus_off_b 仍保留
   const dropped = dv.getUint32(o, true);
-  busStats.textContent = `A: ${fpsA} 帧/秒 ${loadA.toFixed(1)}% · B: ${fpsB} 帧/秒 ${loadB.toFixed(1)}% · 丢弃=${dropped}`;
+  const aLoss = errA > 0 ? ` 丢${errA}` : '';
+  const bLoss = errB > 0 ? ` 丢${errB}` : '';
+  busStats.textContent = `A: ${fpsA} 帧/秒 ${loadA.toFixed(1)}%${aLoss} · B: ${fpsB} 帧/秒 ${loadB.toFixed(1)}%${bLoss} · 队列丢弃=${dropped}`;
 }
 
 // 建立只读 WS 连接；断线后 1 秒重连。前端不再向设备发送任何 WS 命令。
@@ -466,6 +486,61 @@ idApplyBtn.onclick = applyFilters;
 for (const el of [idFilter, rangeFrom, rangeTo, searchBox, metricMin, metricMax]) {
   el.addEventListener('keydown', (e) => { if (e.key === 'Enter') applyFilters(); });
 }
+
+// ===== ID 隐藏（拒绝列表）=====
+// 刷新"已隐藏"提示与可点击标签；点标签即把对应 ID 移出拒绝列表。
+function updateHiddenInfo() {
+  hiddenList.textContent = '';
+  if (hiddenKeys.size === 0) {
+    hiddenInfo.textContent = '未隐藏任何 ID';
+    return;
+  }
+  hiddenInfo.textContent = `已隐藏 ${hiddenKeys.size} 个 ID（点标签取消）：`;
+  for (const k of [...hiddenKeys].sort((a, b) => a - b)) {
+    const ch = Math.floor(k / 4096);  // recordKey = ch*4096 + id
+    const id = k % 4096;
+    const chip = document.createElement('button');
+    chip.className = 'hidden-chip';
+    chip.textContent = `${ch === 0 ? 'A' : 'B'} ${idText(id)} ✕`;
+    chip.onclick = () => { hiddenKeys.delete(k); updateHiddenInfo(); repaintAll(); };
+    hiddenList.appendChild(chip);
+  }
+}
+// 把所有已勾选的行加入拒绝列表，并清掉它们的勾选状态。
+function hideSelected() {
+  let added = 0;
+  for (const k in rows) {
+    const pair = rows[k];
+    if (pair.cb && pair.cb.checked) {
+      hiddenKeys.add(pair.key);
+      pair.cb.checked = false;
+      added++;
+    }
+  }
+  selectAll[0].checked = false;
+  selectAll[1].checked = false;
+  if (added) { updateHiddenInfo(); repaintAll(); }
+}
+function unhideAll() {
+  if (hiddenKeys.size === 0) return;
+  hiddenKeys.clear();
+  updateHiddenInfo();
+  repaintAll();
+}
+// 表头全选：只勾选当前可见（未被筛掉、未被隐藏）的本通道行。
+function setAllChecks(ch, checked) {
+  for (const k in rows) {
+    const pair = rows[k];
+    const rec = records[k];
+    if (!pair.cb || !rec || rec.ch !== ch || rowHidden(rec)) continue;
+    pair.cb.checked = checked;
+  }
+}
+hideSelectedBtn.onclick = hideSelected;
+unhideAllBtn.onclick = unhideAll;
+selectAll[0].onchange = () => setAllChecks(0, selectAll[0].checked);
+selectAll[1].onchange = () => setAllChecks(1, selectAll[1].checked);
+updateHiddenInfo();
 
 // 周期性刷新可见行的字节年龄颜色；冻结视图时完全停止刷新 DOM。
 function refreshVisible() {

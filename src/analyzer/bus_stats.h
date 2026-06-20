@@ -65,14 +65,6 @@ public:
         snapshot_.dropped = dropped_;
         windowStartMs_ = nowMs;
     }
-
-    BusStatsSnapshot snapshot() const
-    {
-        BusStatsSnapshot s = snapshot_;
-        s.dropped = dropped_;
-        return s;
-    }
-
         // 由消费侧(loop)每轮喂入驱动层累计硬件丢帧，随快照下发。
     void setHwDrops(uint32_t chA, uint32_t chB)
     {

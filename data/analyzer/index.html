@@ -5,6 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>CAN 分析仪</title>
   <link rel="stylesheet" href="style.css"/>
+  <style>
+    /* ID 隐藏功能的轻量样式，独立于 style.css */
+    .sel-col { width: 1.8em; text-align: center; }
+    #hidden-list { display: inline-flex; flex-wrap: wrap; gap: 2px; vertical-align: middle; }
+    .hidden-chip { margin: 1px; padding: 1px 6px; cursor: pointer; font: inherit; }
+  </style>
 </head>
 <body>
   <!-- 网络/电源面板：只做 WiFi 配置、状态刷新、重启与深睡，不包含任何 CAN 发送控制。 -->
@@ -45,10 +51,17 @@
     <span id="bus-stats">A: 0 帧/秒 0.0% · B: 0 帧/秒 0.0% · 丢弃=0</span>
   </div>
   <div id="status">WS：连接中…</div>
+  <!-- ID 隐藏：勾选行末复选框（或表头全选）后点"隐藏所选"，把选中 ID 从列表移除；可逐个或全部取消。 -->
+  <div class="controls">
+    <button id="hide-selected-btn">隐藏所选 ID</button>
+    <button id="unhide-all-btn">取消全部隐藏</button>
+    <span id="hidden-info">未隐藏任何 ID</span>
+    <span id="hidden-list"></span>
+  </div>
   <!-- A/B 两张表的 tbody 由 app.js 懒创建行节点并增量更新。 -->
   <div class="grid">
-    <section><h2>CAN_A 实时表</h2><div class="panel-summary">显示 A 通道每个 ID 的最新数据、接收次数、周期估计和变化活跃度。</div><table id="tbl-a"><thead><tr><th>ID</th><th>DLC</th><th>数据</th><th>计数</th><th>Δt</th><th>周期</th><th>抖动</th><th>活跃</th></tr></thead><tbody></tbody></table></section>
-    <section><h2>CAN_B 实时表</h2><div class="panel-summary">显示 B 通道每个 ID 的最新数据、接收次数、周期估计和变化活跃度。</div><table id="tbl-b"><thead><tr><th>ID</th><th>DLC</th><th>数据</th><th>计数</th><th>Δt</th><th>周期</th><th>抖动</th><th>活跃</th></tr></thead><tbody></tbody></table></section>
+    <section><h2>CAN_A 实时表</h2><div class="panel-summary">显示 A 通道每个 ID 的最新数据、接收次数、周期估计和变化活跃度。</div><table id="tbl-a"><thead><tr><th>ID</th><th>DLC</th><th>数据</th><th>计数</th><th>Δt</th><th>周期</th><th>抖动</th><th>活跃</th><th class="sel-col"><input id="select-all-a" type="checkbox" title="全选/全不选本表可见行"/></th></tr></thead><tbody></tbody></table></section>
+    <section><h2>CAN_B 实时表</h2><div class="panel-summary">显示 B 通道每个 ID 的最新数据、接收次数、周期估计和变化活跃度。</div><table id="tbl-b"><thead><tr><th>ID</th><th>DLC</th><th>数据</th><th>计数</th><th>Δt</th><th>周期</th><th>抖动</th><th>活跃</th><th class="sel-col"><input id="select-all-b" type="checkbox" title="全选/全不选本表可见行"/></th></tr></thead><tbody></tbody></table></section>
   </div>
   <script src="app.js"></script>
 </body>

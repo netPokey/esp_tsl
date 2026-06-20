@@ -288,7 +288,8 @@ void pushDelta()
     flush();
 }
 
-// 每秒推送一次总线统计。rx_err/bus_off 字段目前保留为 0，占位以保持协议布局稳定。
+// 每秒推送一次总线统计。rx_err_a/b 现承载驱动层的硬件级丢帧（CAN_A 溢出事件、CAN_B rx_missed），
+// 让前端能看见 FrameQueue 之外、被芯片/驱动队列丢掉的帧；bus_off 仍保留为 0。
 void pushBusStats()
 {
     if (!g_stats || ws.count() == 0)
@@ -300,6 +301,8 @@ void pushBusStats()
     stats.fps_b = snapshot.fps[1];
     stats.load_a_x10 = snapshot.load_x10[0];
     stats.load_b_x10 = snapshot.load_x10[1];
+    stats.rx_err_a = snapshot.hw_drops[0];
+    stats.rx_err_b = snapshot.hw_drops[1];
     stats.dropped = snapshot.dropped;
 
     uint8_t buf[1 + sizeof(WsBusStats)];

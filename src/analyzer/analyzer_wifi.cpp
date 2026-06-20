@@ -61,7 +61,7 @@ bool saveCredentials(const AnalyzerWifiCredentials &c)
 // out 先清零，保证失败路径不会泄漏上一次内容。
 bool analyzerWifiSanitizeCredentials(const char *ssid, const char *pass, AnalyzerWifiCredentials &out)
 {
-    memset(&out, 0, sizeof(out));
+    out = {}; // 取代 memset(&out, 0, sizeof(out));
     if (!ssid || ssid[0] == '\0')
         return false;
     const size_t ssidLen = strlen(ssid);

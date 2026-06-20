@@ -1,4 +1,5 @@
 #include "analyzer/id_table.h"
+#include <type_traits>
 #include <cstring>
 
 // IdTable 是消费侧的主状态缓存：把原始帧折叠成每 ID 一条最新记录。
@@ -8,7 +9,9 @@ void IdTable::init(IdRecord *base)
 {
     base_ = base;
     // PSRAM/堆分配的内存不保证清零；present=false、计数=0 是后续首次帧判断的前提。
-    memset(base_, 0, kStorageBytes);
+    static_assert(std::is_trivially_copyable<IdRecord>::value,
+        "IdRecord 必须可平凡拷贝，memset 清零才合法");  // 需 #include <type_traits>
+    memset(static_cast<void *>(base_), 0, kStorageBytes);
 }
 
 IdRecord &IdTable::at(uint8_t channel, uint32_t id)
