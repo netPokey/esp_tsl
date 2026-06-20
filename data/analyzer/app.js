@@ -659,3 +659,23 @@ connect();
 refreshWifiStatus();
 refreshBusHealth();
 setInterval(refreshBusHealth, 2000);
+
+// 设备日志（/api/log）：把固件串口诊断拉到网页查看，约每 1.5s 自动刷新一次。
+const logView = document.getElementById('log-view');
+const logAuto = document.getElementById('log-auto');
+const logRefreshBtn = document.getElementById('log-refresh-btn');
+async function refreshLog() {
+  try {
+    const r = await fetch('/api/log');
+    if (!r.ok) return;
+    const t = await r.text();
+    if (logView.textContent === t) return;
+    // 用户已滚到底则保持贴底，否则保留其阅读位置。
+    const atBottom = logView.scrollTop + logView.clientHeight >= logView.scrollHeight - 4;
+    logView.textContent = t;
+    if (atBottom) logView.scrollTop = logView.scrollHeight;
+  } catch (e) {}
+}
+logRefreshBtn.onclick = refreshLog;
+setInterval(() => { if (logAuto.checked) refreshLog(); }, 1500);
+refreshLog();

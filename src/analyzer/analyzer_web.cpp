@@ -13,6 +13,8 @@
 #include <esp_sleep.h>
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
+#include <cstdarg>
 
 // ============================================================================
 // 最小 Web/WS 层：
@@ -32,6 +34,34 @@ AsyncWebSocket ws("/ws");
 FrameQueue *g_queue = nullptr;
 IdTable *g_table = nullptr;
 BusStatsTracker *g_stats = nullptr;
+
+// ---- 设备日志环形缓冲：把诊断/串口消息透传到网页(/api/log) ----
+// 设备在车上接 CAN 时通常无法同时连 USB 读串口，故把日志存这里供浏览器查看。
+// 写者=loop/setup(loopTask)，读者=/api/log 回调(AsyncTCP 任务)，用 mutex 保护——
+// 注意是 mutex 而非 portMUX，故可在持锁时安全构建 String。
+constexpr size_t kLogLines = 60;
+constexpr size_t kLogLineLen = 128;  // 容纳含中文(UTF-8)的诊断行，避免截断成半个字符
+char g_logLines[kLogLines][kLogLineLen];
+size_t g_logHead = 0;   // 下一个写入槽
+size_t g_logCount = 0;
+SemaphoreHandle_t g_logMutex = nullptr;
+
+// 按时间顺序把环形缓冲拼成多行文本(每行末补 '\n')。
+void webLogText(String &out)
+{
+    out = "";
+    out.reserve(kLogLines * (kLogLineLen + 1));
+    if (!g_logMutex || xSemaphoreTake(g_logMutex, pdMS_TO_TICKS(20)) != pdTRUE)
+        return;
+    size_t idx = (g_logHead + kLogLines - g_logCount) % kLogLines;
+    for (size_t i = 0; i < g_logCount; ++i)
+    {
+        out += g_logLines[idx];
+        out += '\n';
+        idx = (idx + 1) % kLogLines;
+    }
+    xSemaphoreGive(g_logMutex);
+}
 
 // 每个 (channel,id) 对应一个 dirty bit。消费侧更新 IdTable 后置位，pushDelta() 发送后清位。
 constexpr uint32_t kDirtyKeys = static_cast<uint32_t>(kChannelCount) * kStdIdCount;
@@ -312,6 +342,39 @@ void pushBusStats()
 }
 }  // namespace
 
+// 初始化日志缓冲的互斥量；应在产生任何日志前(setup 早期)调用一次。
+void analyzerWebLogInit()
+{
+    if (!g_logMutex)
+        g_logMutex = xSemaphoreCreateMutex();
+}
+
+// 格式化一行日志：tee 到 Serial(USB 在场时仍可看)，并存入环形缓冲供网页 /api/log 读取。
+void analyzerWebLogPrintf(const char *fmt, ...)
+{
+    Serial.println(fmt);
+    char line[kLogLineLen];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(line, sizeof(line), fmt, ap);
+    va_end(ap);
+
+    // 去掉尾部换行：存储统一为"一行一条"，输出时再补 '\n'。
+    size_t n = strlen(line);
+    while (n > 0 && (line[n - 1] == '\n' || line[n - 1] == '\r'))
+        line[--n] = '\0';
+
+    Serial.println(line);
+
+    if (!g_logMutex || xSemaphoreTake(g_logMutex, pdMS_TO_TICKS(20)) != pdTRUE)
+        return;
+    strlcpy(g_logLines[g_logHead], line, kLogLineLen);
+    g_logHead = (g_logHead + 1) % kLogLines;
+    if (g_logCount < kLogLines)
+        ++g_logCount;
+    xSemaphoreGive(g_logMutex);
+}
+
 // 注入由组装点创建的核心对象；Web 层仅保存裸指针，不负责释放。
 void analyzerWebSetContext(FrameQueue *queue, IdTable *table, BusStatsTracker *stats)
 {
@@ -333,6 +396,14 @@ void analyzerWebBegin()
         out += "}";
         request->send(200, "application/json", out);
     });
+
+        // 设备日志透传：纯文本，前端定时拉取后显示在"设备日志"面板。
+    server.on("/api/log", HTTP_GET, [](AsyncWebServerRequest *request) {
+        String out;
+        webLogText(out);
+        request->send(200, "text/plain; charset=utf-8", out);
+    });
+
 
     server.on("/api/wifi", HTTP_GET, [](AsyncWebServerRequest *request) {
         request->send(200, "application/json", wifiStatusJson());

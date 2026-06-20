@@ -44,9 +44,10 @@ void setup()
     Serial.begin(115200);
     delay(1000);
     setCanTxEnabled(false);  // 只监听模式：全局禁止任何 CAN 发送，确保不打扰被测总线。
+    analyzerWebLogInit(); 
 
     if (!LittleFS.begin(true))
-        Serial.println("LittleFS mount failed");
+        analyzerWebLogPrintf("LittleFS mount failed");
 
     // IdTable 定长 [2 通道][2048 ID]，体量大故放 PSRAM（SPIRAM），不占内置 RAM。
     // 分配失败则无法工作，直接死循环停机而非带病运行。
@@ -75,9 +76,9 @@ void setup()
     markAnalyzerChannelOnline(1, canBOk);
 
     if (!canAOk)
-        Serial.println("CAN_A init failed");
+        analyzerWebLogPrintf("CAN_A init failed");
     if (!canBOk)
-        Serial.println("CAN_B init failed");
+        analyzerWebLogPrintf("CAN_B init failed");
 
     // 空过滤器 = 接收全部 ID，符合分析仪"全量监听"定位。
     if (canAOk)
@@ -95,8 +96,7 @@ void setup()
     analyzerWebSetContext(&g_queue, &g_table, &g_stats);
     analyzerWebBegin();
 
-    Serial.print("CAN analyzer ready (listen-only): http://");
-    Serial.println(ip);
+    analyzerWebLogPrintf("CAN analyzer ready (listen-only): http://%s", ip.c_str());
 }
 
 // Arduino 主循环负责 Web 服务与队列消费；高优先级 rx_task 会抢占它完成 CAN 入队。
@@ -116,10 +116,10 @@ void loop()
     {
         lastDiagMs = nowMs;
         const uint8_t recA = g_canA->rxErrorCounter();
-        Serial.printf("[diag] CAN_A 真溢出=%lu  REC=%u  TEC=%u%s\n",
-                      static_cast<unsigned long>(g_canA->rxOverflowCount()),
-                      static_cast<unsigned>(recA), static_cast<unsigned>(g_canA->txErrorCounter()),
-                      recA > 127 ? "  <- 错误被动: 查位定时/晶振/接线" : "");
+        analyzerWebLogPrintf("[diag] CAN_A 真溢出=%lu  REC=%u  TEC=%u%s",
+            static_cast<unsigned long>(g_canA->rxOverflowCount()),
+            static_cast<unsigned>(recA), static_cast<unsigned>(g_canA->txErrorCounter()),
+            recA > 127 ? "  <- 错误被动: 查位定时/晶振/接线" : "");
     }
 
     analyzerWebLoop();

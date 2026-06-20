@@ -35,3 +35,8 @@ void analyzerWebSetContext(FrameQueue *queue, IdTable *table, BusStatsTracker *s
 void analyzerWebBegin();
 // 主循环调用：消费队列、处理 pending WiFi/电源动作、按节奏推送 WS。
 void analyzerWebLoop();
+
+// 设备日志透传：把诊断/串口消息存入环形缓冲，供 /api/log 在网页查看
+// (设备在车上接 CAN 时通常无法同时连 USB 读串口)。Printf 同时 tee 到 Serial。
+void analyzerWebLogInit();
+void analyzerWebLogPrintf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));

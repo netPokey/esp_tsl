@@ -46,3 +46,5 @@ tr.activity-high { background: #331414; }
 .cand-bit-list { color: #22c55e; margin-left: 4px; font-size: 11px; }
 tr.new-id .id-text { color: #22c55e; font-weight: bold; }
 button.active { border-color: #22c55e; color: #22c55e; }
+/* 设备日志面板：等宽、深底、可滚动，自动贴底显示最新诊断。 */
+.log-view { margin: 8px; padding: 8px; max-height: 220px; overflow-y: auto; background: #0b0b0b; border: 1px solid #333; color: #9fce9f; font-size: 12px; white-space: pre-wrap; word-break: break-all; }

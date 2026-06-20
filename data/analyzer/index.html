@@ -71,6 +71,13 @@
     <section><h2>CAN_A 实时表</h2><div class="panel-summary">显示 A 通道每个 ID 的最新数据、接收次数、周期估计和变化活跃度。</div><table id="tbl-a"><thead><tr><th>ID</th><th>DLC</th><th>数据</th><th>计数</th><th>Δt</th><th>周期</th><th>抖动</th><th>活跃</th><th class="sel-col"><input id="select-all-a" type="checkbox" title="全选/全不选本表可见行"/></th></tr></thead><tbody></tbody></table></section>
     <section><h2>CAN_B 实时表</h2><div class="panel-summary">显示 B 通道每个 ID 的最新数据、接收次数、周期估计和变化活跃度。</div><table id="tbl-b"><thead><tr><th>ID</th><th>DLC</th><th>数据</th><th>计数</th><th>Δt</th><th>周期</th><th>抖动</th><th>活跃</th><th class="sel-col"><input id="select-all-b" type="checkbox" title="全选/全不选本表可见行"/></th></tr></thead><tbody></tbody></table></section>
   </div>
+   <!-- 设备日志：把固件 Serial 诊断(含每秒 [diag] 行)透传到网页，车上无需连 USB 串口。 -->
+   <div class="controls">
+    <span>设备日志（串口透传）</span>
+    <button id="log-refresh-btn">刷新</button>
+    <label><input id="log-auto" type="checkbox" checked/> 自动刷新</label>
+  </div>
+  <pre id="log-view" class="log-view"></pre>
   <script src="app.js"></script>
 </body>
 </html>
