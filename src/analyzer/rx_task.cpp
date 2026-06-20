@@ -22,6 +22,17 @@ struct RxTaskContext
 
 RxTaskContext g_ctx;
 
+// 采集任务句柄 + MCP2515 INT 的 ISR。INT 拉低(收到帧)即唤醒任务立刻 drain，
+// 把收帧延迟从"1ms 轮询"降到 ISR 级，消除 MCP2515 仅 2 个接收缓冲在突发下的溢出。
+TaskHandle_t g_rxTaskHandle = nullptr;
+void IRAM_ATTR rxOnCanInt()
+{
+    BaseType_t higherWoken = pdFALSE;
+    if (g_rxTaskHandle)
+        vTaskNotifyGiveFromISR(g_rxTaskHandle, &higherWoken);
+    portYIELD_FROM_ISR(higherWoken);
+}
+
 // 把指定通道驱动里已到达的帧全部读空并逐帧入队。channel: 0=A, 1=B。
 // 在 Core1 采集任务循环中调用。driver 为空（通道未启用）时直接返回。
 void drainInto(FrameQueue *queue, CanDriver *driver, uint8_t channel)
@@ -45,7 +56,10 @@ void drainInto(FrameQueue *queue, CanDriver *driver, uint8_t channel)
     }
 }
 
-// Core1 任务主循环：轮询两路通道后让出 1 tick，让同核 loopTask 有机会消费队列。
+// Core1 任务主循环：每轮排空两路通道，然后阻塞等待。
+// MCP2515(A) 的 INT 会即时唤醒本任务；超时(1ms)既是 B 路(TWAI，无 INT)的轮询节拍，
+// 也是 A 未接/失效 INT 时的安全回退——最差也只退化回原来的 1ms 轮询，不会更糟。
+
 void rxTaskLoop(void *arg)
 {
     RxTaskContext *ctx = static_cast<RxTaskContext *>(arg);
@@ -53,7 +67,7 @@ void rxTaskLoop(void *arg)
     {
         drainInto(ctx->queue, ctx->driverA, 0);
         drainInto(ctx->queue, ctx->driverB, 1);
-        vTaskDelay(1);
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1));
     }
 }
 }
@@ -64,5 +78,11 @@ void rxTaskStart(CanDriver *driverA, CanDriver *driverB, FrameQueue *queue)
     g_ctx.driverB = driverB;
     g_ctx.queue = queue;
     // 固定到 Core1，并以高于默认 loopTask 的优先级运行；Core0 保留给 WiFi/TCPIP 底层任务。
-    xTaskCreatePinnedToCore(rxTaskLoop, "can_rx", 4096, &g_ctx, 10, nullptr, kRxTaskCore);
+    xTaskCreatePinnedToCore(rxTaskLoop, "can_rx", 4096, &g_ctx, 10, &g_rxTaskHandle, kRxTaskCore);
+    // 任务句柄就绪后再挂中断，避免 ISR 早于句柄触发。A=MCP2515 会真正挂上；
+    // B=TWAI 的 enableInterrupt 返回 false(无 INT 引脚)，自动回退轮询，无副作用。
+    if (driverA)
+        driverA->enableInterrupt(&rxOnCanInt);
+    if (driverB)
+        driverB->enableInterrupt(&rxOnCanInt);
 }

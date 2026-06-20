@@ -65,7 +65,7 @@ void setup()
     // CAN_A 走 SPI 上的 MCP2515；CAN_B 走 ESP32 内置 TWAI 控制器。
     g_canA.reset(new MCP2515Driver(MCP2515_CS, MCP2515_RST,
                                    MCP2515_SCLK, MCP2515_MISO, MCP2515_MOSI,
-                                   &SPI, 10000000));
+                                   &SPI, 10000000, MCP2515_INT));
     g_canB.reset(new TWAIDriver(static_cast<gpio_num_t>(CAN_TX),
                                 static_cast<gpio_num_t>(CAN_RX)));
 
@@ -102,10 +102,26 @@ void setup()
 // Arduino 主循环负责 Web 服务与队列消费；高优先级 rx_task 会抢占它完成 CAN 入队。
 void loop()
 {
-    // 把驱动层累计的硬件丢帧喂给统计：CAN_A=MCP2515 溢出事件，CAN_B=TWAI rx_missed。
+    // 把驱动层累计的硬件丢帧喂给统计：CAN_A=MCP2515 真实接收溢出，CAN_B=TWAI rx_missed。
     g_stats.setHwDrops(
     g_canA ? g_canA->rxOverflowCount() : 0,
     g_canB ? g_canB->getDiagnostics().rxMissed : 0);
+
+    // 每秒打一行 A 路诊断，区分"缓冲溢出"还是"总线/位定时错误"：
+    //   真溢出持续涨 = 收取跟不上(中断收包应能压到 ~0)；
+    //   REC>127 = 错误被动，多为 500k 位定时/8M-16M 晶振/接线/终端问题，中断救不了。
+    static uint32_t lastDiagMs = 0;
+    const uint32_t nowMs = millis();
+    if (g_canA && nowMs - lastDiagMs >= 1000)
+    {
+        lastDiagMs = nowMs;
+        const uint8_t recA = g_canA->rxErrorCounter();
+        Serial.printf("[diag] CAN_A 真溢出=%lu  REC=%u  TEC=%u%s\n",
+                      static_cast<unsigned long>(g_canA->rxOverflowCount()),
+                      static_cast<unsigned>(recA), static_cast<unsigned>(g_canA->txErrorCounter()),
+                      recA > 127 ? "  <- 错误被动: 查位定时/晶振/接线" : "");
+    }
+
     analyzerWebLoop();
     delay(1);
 }
