@@ -32,6 +32,12 @@ const unhideAllBtn = document.getElementById('unhide-all-btn');
 const hiddenInfo = document.getElementById('hidden-info');
 const hiddenList = document.getElementById('hidden-list');
 const selectAll = { 0: document.getElementById('select-all-a'), 1: document.getElementById('select-all-b') };
+// 信号定位（bit 级噪音掩码）控件。
+const learnBtn = document.getElementById('learn-btn');
+const captureBtn = document.getElementById('capture-btn');
+const analysisResetBtn = document.getElementById('analysis-reset-btn');
+const analysisStatus = document.getElementById('analysis-status');
+const candOnly = document.getElementById('cand-only');
 // records 保存每个 (channel,id) 的最新数据；rows 保存对应 DOM 节点引用，避免每帧重建表格。
 const rows = {};
 const records = {};
@@ -46,6 +52,8 @@ const flt = {
   metricIsActivity: false, metricMin: null, metricMax: null,
 };
 let ws = null;
+// 'off' = 不分析；'learning' = 累积静止噪音位；'watching' = 冻结噪音、累积触发后变化位。
+let analysisPhase = 'off';
 let needSort = false;
 let sortQueued = false;
 let recordRenderQueued = false;
@@ -93,12 +101,19 @@ function byteClass(ageMs) {
   return '';
 }
 function bitHtml(rec) {
+  const analysisOn = analysisPhase !== 'off';
   let out = '';
   for (let byte = 0; byte < rec.dlc; byte++) {
     out += `B${byte}: `;
     for (let bit = 7; bit >= 0; bit--) {
       const one = (rec.data[byte] >> bit) & 1;
-      out += `<span class="bit ${one ? 'one' : ''}">${one}</span>`;
+      const cand = (rec.candMask[byte] >> bit) & 1;
+      const noise = analysisOn && ((rec.noiseMask[byte] >> bit) & 1);
+      let cls = 'bit';
+      if (one) cls += ' one';
+      if (cand) cls += ' cand';
+      else if (noise) cls += ' noise';
+      out += `<span class="${cls}">${one}</span>`;
     }
     out += ' ';
   }
@@ -109,11 +124,45 @@ function rowClass(score) {
   if (score >= 5) return 'activity-med';
   return 'activity-low';
 }
+// ===== 信号定位（bit 级噪音掩码）=====
+// 思路：先"学习静止噪音"几秒，记下静止时就在跳的 bit（计数器/校验/实时量）；再"开始抓取"后
+// 触发车内操作，只看 candMask = moveMask & ~noiseMask —— 即"静止时稳定、触发后才变"的 bit。
+// 因为是 bit 级 + 时间维度（静止 vs 触发），即便目标信号和噪音挤在同一条 ID/同一字节也能拎出来。
+function popcount8(x) { x &= 0xff; x = x - ((x >> 1) & 0x55); x = (x & 0x33) + ((x >> 2) & 0x33); return (x + (x >> 4)) & 0x0f; }
+function recomputeCand(rec) {
+  let bits = 0;
+  for (let b = 0; b < 8; b++) {
+    const m = rec.moveMask[b] & ~rec.noiseMask[b] & 0xff;
+    rec.candMask[b] = m;
+    bits += popcount8(m);
+  }
+  rec.candBits = bits;
+}
+// clearNoise=true 连静止噪音一起清（学习/关闭）；false 只清触发掩码（进入抓取时冻结噪音）。
+function clearRecAnalysis(rec, clearNoise) {
+  for (let b = 0; b < 8; b++) {
+    rec.moveMask[b] = 0;
+    rec.candMask[b] = 0;
+    if (clearNoise) rec.noiseMask[b] = 0;
+  }
+  rec.candBits = 0;
+  rec.isNew = false;
+}
+function isCandRow(rec) { return rec.candBits > 0 || rec.isNew; }
+// 候选 bit 的可读标签，如 B1.5 = 第1字节 bit5（与位视图 B{n}: 标注一致）。
+function candBitLabels(rec) {
+  const out = [];
+  for (let b = 0; b < 8; b++)
+    for (let bit = 0; bit < 8; bit++)
+      if ((rec.candMask[b] >> bit) & 1) out.push('B' + b + '.' + bit);
+  return out.join(',');
+}
 // 所有筛选都在浏览器本地完成：后端始终推送 dirty ID，前端决定是否显示。
 // 通道实时读 DOM；其余条件读 flt 预编译值，点"确认"后才更新。
 function passesLocalFilters(rec) {
   if (channelFilter.value === 'A' && rec.ch !== 0) return false;
   if (channelFilter.value === 'B' && rec.ch !== 1) return false;
+  if (candOnly.checked && !isCandRow(rec)) return false;
   if (flt.invalid) return false;
   if (flt.idExact !== null && rec.id !== flt.idExact) return false;
   if (flt.rangeFrom !== null && rec.id < flt.rangeFrom) return false;
@@ -150,6 +199,9 @@ function ensureRows(rec) {
   idSpan.className = 'id-text';
   idSpan.textContent = idText(rec.id);
   idTd.appendChild(idSpan);
+  const idCandSpan = document.createElement('span');
+  idCandSpan.className = 'cand-bit-list';
+  idTd.appendChild(idCandSpan);
 
   const dataTd = document.createElement('td');
   const byteSpans = [];
@@ -196,7 +248,7 @@ function ensureRows(rec) {
   };
 
   rows[key] = {
-    tr, bit, bitTd, byteSpans, cb, key,
+    tr, bit, bitTd, byteSpans, cb, key,idCandSpan,
     dlcTd, countTd, deltaTd, periodTd, jitterTd, scoreTd,
     lastClass: '',
   };
@@ -215,6 +267,7 @@ function paintRecord(rec, hiddenRow) {
   const cls = rowClass(rec.changeScore);
   if (cls !== pair.lastClass) { tr.className = cls; pair.lastClass = cls; }
   tr.classList.toggle('hidden', hiddenRow);
+  tr.classList.toggle('new-id', !!rec.isNew);
 
   if (hiddenRow || pair.bit.dataset.manualHidden !== '0') pair.bit.classList.add('hidden');
   else pair.bit.classList.remove('hidden');
@@ -226,7 +279,8 @@ function paintRecord(rec, hiddenRow) {
     if (i < rec.dlc) {
       const txt = formatByte(rec.data[i]);
       if (s.textContent !== txt) s.textContent = txt;
-      const c = ('byte ' + byteClass(rec.byteAge[i])).trim();
+      let c = ('byte ' + byteClass(rec.byteAge[i])).trim();
+      if (rec.candMask[i]) c += ' cand';
       if (s.className !== c) s.className = c;
       if (s.style.display !== '') s.style.display = '';
     } else if (s.style.display !== 'none') {
@@ -241,6 +295,8 @@ function paintRecord(rec, hiddenRow) {
   setText(pair.jitterTd, rec.jitterMs);
   setText(pair.scoreTd, rec.changeScore);
 
+  setText(pair.idCandSpan, rec.isNew ? '新ID' : (rec.candBits ? candBitLabels(rec) : ''));
+
   if (!pair.bit.classList.contains('hidden')) pair.bitTd.innerHTML = bitHtml(rec);
 }
 
@@ -253,6 +309,7 @@ function sortTables() {
         switch (sortSelect.value) {
           case 'activity': return b.changeScore - a.changeScore || a.id - b.id;
           case 'count':    return a.count - b.count || a.id - b.id;
+          case 'cand':     return (b.candBits + (b.isNew ? 1000 : 0)) - (a.candBits + (a.isNew ? 1000 : 0)) || a.id - b.id;
           default:         return a.id - b.id;
         }
       });
@@ -332,12 +389,32 @@ function parseDelta(buf) {
     let rec = records[key];
     if (!rec) {
       rec = { key, ch, id, dlc: 0, data: new Array(8).fill(0), byteAge: new Array(8).fill(0),
-        count: 0, lastRx: 0, deltaMs: 0, periodMs: 0, jitterMs: 0, changeScore: 0, flags: 0 };
+        count: 0, lastRx: 0, deltaMs: 0, periodMs: 0, jitterMs: 0, changeScore: 0, flags: 0,
+        noiseMask: new Array(8).fill(0), moveMask: new Array(8).fill(0), candMask: new Array(8).fill(0),
+        candBits: 0, sampled: false, isNew: analysisPhase === 'watching' };
       records[key] = rec;
     }
     rec.dlc = dv.getUint8(o); o += 1;
-    for (let b = 0; b < 8; b++) rec.data[b] = dv.getUint8(o + b);
+    // 按帧把"相对上一次快照变化的 bit"累积进掩码：学习期进 noiseMask，抓取期进 moveMask。
+    // sampled 守卫跳过该 ID 的首帧（否则会把首次出现的全部 1 误当成变化）。
+    for (let b = 0; b < 8; b++) {
+      const nb = dv.getUint8(o + b);
+      if (rec.sampled && analysisPhase !== 'off') {
+        const changed = (rec.data[b] ^ nb) & 0xff;
+        if (changed) {
+          if (analysisPhase === 'learning') rec.noiseMask[b] |= changed;
+          else rec.moveMask[b] |= changed;
+        }
+      }
+      rec.data[b] = nb;
+    }
     o += 8;
+    rec.sampled = true;
+    if (analysisPhase === 'watching') {
+      const had = rec.candBits > 0;
+      recomputeCand(rec);
+      if (had !== (rec.candBits > 0)) needSort = true;  // 候选集变化时触发重排
+    }
     rec.lastRx = dv.getUint32(o, true); o += 4;
     for (let b = 0; b < 8; b++) { rec.byteAge[b] = dv.getUint16(o, true); o += 2; }
     rec.count = dv.getUint32(o, true); o += 4;
@@ -541,6 +618,29 @@ unhideAllBtn.onclick = unhideAll;
 selectAll[0].onchange = () => setAllChecks(0, selectAll[0].checked);
 selectAll[1].onchange = () => setAllChecks(1, selectAll[1].checked);
 updateHiddenInfo();
+// ===== 信号定位三段式控制 =====
+// ① 学习静止噪音：清掉所有掩码，开始把静止时变化的 bit 记成噪音（车上先别动）。
+// ② 开始抓取：冻结噪音掩码、清空触发掩码，之后去触发车内操作，看绿色候选位。
+// 清除：回到关闭，所有掩码清零。
+function setAnalysisStatus() {
+  const txt = analysisPhase === 'learning' ? '学习静止噪音中…（车上先别操作）'
+    : analysisPhase === 'watching' ? '抓取中：现在去触发车内操作，看绿色高亮位'
+    : '关闭';
+  analysisStatus.textContent = '分析：' + txt;
+  learnBtn.classList.toggle('active', analysisPhase === 'learning');
+  captureBtn.classList.toggle('active', analysisPhase === 'watching');
+}
+function setAnalysisPhase(phase, clearNoise) {
+  analysisPhase = phase;
+  for (const rec of Object.values(records)) clearRecAnalysis(rec, clearNoise);
+  setAnalysisStatus();
+  repaintAll();
+}
+learnBtn.onclick = () => setAnalysisPhase('learning', true);
+captureBtn.onclick = () => setAnalysisPhase('watching', false);
+analysisResetBtn.onclick = () => setAnalysisPhase('off', true);
+candOnly.onchange = repaintAll;
+setAnalysisStatus();
 
 // 周期性刷新可见行的字节年龄颜色；冻结视图时完全停止刷新 DOM。
 function refreshVisible() {

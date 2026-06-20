@@ -39,3 +39,10 @@ tr.activity-high { background: #331414; }
   .grid, .network-grid { grid-template-columns: 1fr; }
   #wifi-status { grid-column: span 1; }
 }
+/* 信号定位：噪音位灰掉，候选位（静止稳定、触发后才变）高亮绿。 */
+.bit.noise { opacity: 0.18; }
+.bit.cand { background: #16a34a; color: #fff; box-shadow: 0 0 0 2px #22c55e; }
+.byte.cand { box-shadow: 0 0 0 2px #22c55e; }
+.cand-bit-list { color: #22c55e; margin-left: 4px; font-size: 11px; }
+tr.new-id .id-text { color: #22c55e; font-weight: bold; }
+button.active { border-color: #22c55e; color: #22c55e; }

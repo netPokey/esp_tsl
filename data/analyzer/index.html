@@ -47,8 +47,16 @@
     <label>最大 <input id="metric-max" type="number" min="0" placeholder="不限"/></label>
     <button id="filter-apply-btn">确认</button>
     <label><input id="freeze-view" type="checkbox"/> 冻结</label>
-    <label>排序 <select id="sort-select"><option value="id">ID</option><option value="activity">活跃度</option><option value="count">计数↑</option></select></label>
+    <label>排序 <select id="sort-select"><option value="id">ID</option><option value="activity">活跃度</option><option value="count">计数↑</option><option value="cand">候选位</option></select></label>
     <span id="bus-stats">A: 0 帧/秒 0.0% · B: 0 帧/秒 0.0% · 丢弃=0</span>
+  </div>
+  <!-- 信号定位：先"学习静止噪音"几秒，再"开始抓取"后触发车内操作，只看静止时稳定、触发后才变的 bit。 -->
+  <div class="controls">
+    <button id="learn-btn">① 学习静止噪音</button>
+    <button id="capture-btn">② 开始抓取</button>
+    <button id="analysis-reset-btn">清除</button>
+    <label><input id="cand-only" type="checkbox"/> 只看候选</label>
+    <span id="analysis-status">分析：关闭</span>
   </div>
   <div id="status">WS：连接中…</div>
   <!-- ID 隐藏：勾选行末复选框（或表头全选）后点"隐藏所选"，把选中 ID 从列表移除；可逐个或全部取消。 -->
