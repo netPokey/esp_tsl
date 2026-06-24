@@ -111,12 +111,21 @@ void loop()
     //   真溢出持续涨 = 收取跟不上(中断收包应能压到 ~0)；
     //   REC>127 = 错误被动，多为 500k 位定时/8M-16M 晶振/接线/终端问题，中断救不了。
     static uint32_t lastDiagMs = 0;
+    static uint32_t lastRawRx = 0;
+    static uint32_t lastExtRx = 0;
     const uint32_t nowMs = millis();
     if (g_canA && nowMs - lastDiagMs >= 1000)
     {
         lastDiagMs = nowMs;
         const uint8_t recA = g_canA->rxErrorCounter();
-        analyzerWebLogPrintf("[diag] CAN_A 真溢出=%lu  REC=%u  TEC=%u%s",
+        const uint32_t rawNow = g_canA->rxFrameCount();
+        const uint32_t extNow = g_canA->rxExtCount();
+        const uint32_t hwRate = rawNow - lastRawRx;   // 过去≈1s 硬件实际读出的帧数(过滤前)
+        const uint32_t extRate = extNow - lastExtRx;  // 其中扩展帧(会被分析层 id>=2048 过滤掉)
+        lastRawRx = rawNow;
+        lastExtRx = extNow;
+        analyzerWebLogPrintf("[diag] A 硬件收=%lu/s 扩展=%lu/s 真溢出=%lu REC=%u TEC=%u%s",
+            static_cast<unsigned long>(hwRate), static_cast<unsigned long>(extRate),
             static_cast<unsigned long>(g_canA->rxOverflowCount()),
             static_cast<unsigned>(recA), static_cast<unsigned>(g_canA->txErrorCounter()),
             recA > 127 ? "  <- 错误被动: 查位定时/晶振/接线" : "");

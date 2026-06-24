@@ -149,6 +149,9 @@ public:
         frame.dlc = (rawFrame.can_dlc <= 8) ? rawFrame.can_dlc : 8;
         memset(frame.data, 0, sizeof(frame.data));
         memcpy(frame.data, rawFrame.data, frame.dlc);
+        ++rxFrameCount_;                 // 过滤前的原始接收计数(诊断用)
+        if (isExtendedFrame)
+            ++rxExtCount_;               // 扩展帧会在分析层按 id>=2048 丢弃
         return true;
     }
 
@@ -176,6 +179,10 @@ public:
     // 若同时出现"低 fps + 高 REC"，多半是位定时(8M/16M 晶振)、接线或终端问题，而非缓冲溢出。
     uint8_t rxErrorCounter() const { return recCached_; }
     uint8_t txErrorCounter() const { return tecCached_; }
+    // 过滤前的原始接收计数：rxFrameCount=成功读出的总帧数，rxExtCount=其中扩展帧(29-bit)。
+    // 分析层按 id>=2048 丢扩展帧，故"硬件收到 vs 网页 fps"的差额可定位丢帧在硬件还是在过滤。
+    uint32_t rxFrameCount() const { return rxFrameCount_; }
+    uint32_t rxExtCount() const { return rxExtCount_; }
 
 private:
     // 第三方库提供的 MCP2515 控制器对象。
@@ -218,22 +225,30 @@ private:
         const bool ovr = (eflg & (MCP2515::EFLG_RX0OVR | MCP2515::EFLG_RX1OVR)) != 0;
         if (ovr && !lastRxOverflow_)
             ++rxOverflowCount_;
-            lastRxOverflow_ = ovr;
-            if (ovr)
-                controller_.clearRXnOVRFlags();
-    
-            // REC/TEC 限速采样(≤10Hz)，避免每次空轮询都多打 SPI；用于区分溢出 vs 总线错误。
-            const uint32_t now = millis();
-            if (now - lastErrSampleMs_ >= 100)
-            {
-                lastErrSampleMs_ = now;
-                recCached_ = controller_.errorCountRX();
-                tecCached_ = controller_.errorCountTX();
-            }
+        lastRxOverflow_ = ovr;
+        if (ovr)
+            controller_.clearRXnOVRFlags();
+
+        // 关键修复：清掉 CANINTF 的错误中断标志(ERRIF/MERRF)。发生溢出或总线错误时这两个标志
+        // 会把 INT 持续拉低 —— FALLING 边沿从此不再产生，中断收包退化回 1ms 轮询，A 路继续丢。
+        // 每次排空后清一下，让 INT 复位、继续按帧触发中断。
+        controller_.clearERRIF();
+        controller_.clearMERR();
+
+        // REC/TEC 限速采样(≤10Hz)，避免每次空轮询都多打 SPI；用于区分溢出 vs 总线错误。
+        const uint32_t now = millis();
+        if (now - lastErrSampleMs_ >= 100)
+        {
+            lastErrSampleMs_ = now;
+            recCached_ = controller_.errorCountRX();
+            tecCached_ = controller_.errorCountTX();
+        }
     }
     uint32_t rxOverflowCount_ = 0;
     bool lastRxOverflow_ = false;
     uint32_t lastErrSampleMs_ = 0;
     uint8_t recCached_ = 0;
     uint8_t tecCached_ = 0;
+    uint32_t rxFrameCount_ = 0;
+    uint32_t rxExtCount_ = 0;
 };

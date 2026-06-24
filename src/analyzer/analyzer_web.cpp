@@ -40,7 +40,7 @@ BusStatsTracker *g_stats = nullptr;
 // 写者=loop/setup(loopTask)，读者=/api/log 回调(AsyncTCP 任务)，用 mutex 保护——
 // 注意是 mutex 而非 portMUX，故可在持锁时安全构建 String。
 constexpr size_t kLogLines = 60;
-constexpr size_t kLogLineLen = 128;  // 容纳含中文(UTF-8)的诊断行，避免截断成半个字符
+constexpr size_t kLogLineLen = 160;  // 容纳含中文(UTF-8)的较长诊断行，避免截断成半个字符
 char g_logLines[kLogLines][kLogLineLen];
 size_t g_logHead = 0;   // 下一个写入槽
 size_t g_logCount = 0;
