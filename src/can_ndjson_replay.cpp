@@ -1,12 +1,13 @@
 // can_ndjson_replay.cpp
-// 从 LittleFS 中的 can_batches.ndjson 读取 CAN 帧，
+// 启动时从 LittleFS 中的 can_batches.ndjson 预加载 CAN 帧，
 // 根据 BUS 字段分别通过 CAN_A (MCP2515) 和 CAN_B (TWAI) 循环回放，
-// 同时读取并打印接收到的所有 CAN 消息。
-// 优化：提高串口波特率至 921600，使用 ArduinoJson 过滤器加速解析，并将帧发送延迟降至最低。
+// 同时统计另一端回发帧，用于观察发送量与回包量比例。
+// 优化：运行态不再读文件/解析 JSON，只从内存帧表按目标 fps 发送。
 
 #include <Arduino.h>
 #include <LittleFS.h>
 #include <ArduinoJson.h>
+#include <vector>
 
 #include "can_frame_types.h"
 #include "can_helpers.h"
@@ -31,53 +32,168 @@ static TWAIDriver canB(
 
 // ─── 回放状态 ───
 static constexpr const char *NDJSON_PATH = "/can_batches.ndjson";
-static constexpr uint32_t FRAME_INTERVAL_US = 100; // 帧间微秒级间隔 (设置为 0 则不延时)
-static uint32_t lastSendUs = 0;
+static constexpr uint16_t START_TARGET_FPS = 500;
+static constexpr uint16_t MAX_TARGET_FPS = 5000;
+static constexpr uint16_t TARGET_FPS_STEP = 500;
+static constexpr uint32_t RATE_STEP_INTERVAL_MS = 2000;
+static constexpr uint8_t ECHO_DATA_BYTE = 0xAB;
+static constexpr uint8_t MAX_SEND_BURST_PER_LOOP = 32;
+
+struct ReplayFrame
+{
+    CanFrame frame;
+    bool toCanA = false;
+};
+
+static std::vector<ReplayFrame> replayFrames;
+static size_t replayIndex = 0;
+static uint32_t nextSendUs = 0;
+static uint32_t totalFramesAttempted = 0;
 static uint32_t totalFramesSent = 0;
+static uint32_t totalFramesFailed = 0;
 static uint32_t canAFramesSent = 0;
 static uint32_t canBFramesSent = 0;
-static uint32_t loopCount = 0;
+static uint32_t canAFramesFailed = 0;
+static uint32_t canBFramesFailed = 0;
+static uint32_t totalEchoFramesReceived = 0;
+static uint32_t canAEchoFramesReceived = 0;
+static uint32_t canBEchoFramesReceived = 0;
+static uint32_t windowFramesAttempted = 0;
+static uint32_t windowFramesSent = 0;
+static uint32_t windowFramesFailed = 0;
+static uint32_t windowCanAFramesSent = 0;
+static uint32_t windowCanBFramesSent = 0;
+static uint32_t windowCanAFramesFailed = 0;
+static uint32_t windowCanBFramesFailed = 0;
+static uint32_t windowEchoFramesReceived = 0;
+static uint32_t windowCanAEchoFramesReceived = 0;
+static uint32_t windowCanBEchoFramesReceived = 0;
+static uint32_t rateWindowStartMs = 0;
+static uint16_t targetFps = START_TARGET_FPS;
 static bool canAReady = false;
 static bool canBReady = false;
+static bool replayReady = false;
 
 // ArduinoJson 过滤器，只解析需要的字段，大幅提升大 JSON 行的解析速度
 static StaticJsonDocument<128> filterDoc;
 
-// 文件流式读取
-static File ndjsonFile;
-
-// ─── 打印接收到的帧 ───
-static void printReceivedFrame(const char *label, const CanFrame &frame)
+static uint32_t targetFrameIntervalUs()
 {
-    Serial.printf("RX %-5s id=0x%03lX dlc=%u data=",
-                  label,
-                  static_cast<unsigned long>(frame.id),
-                  frame.dlc);
-    for (uint8_t i = 0; i < frame.dlc && i < 8; ++i)
-    {
-        Serial.printf("%02X ", frame.data[i]);
-    }
-    Serial.println();
+    return 1000000UL / targetFps;
 }
 
-// ─── 读取并打印接收队列 ───
-static void readAndPrintIncoming()
+static bool isEchoFrame(const CanFrame &frame)
+{
+    if (frame.dlc == 0)
+        return false;
+
+    for (uint8_t i = 0; i < frame.dlc && i < 8; ++i)
+    {
+        if (frame.data[i] != ECHO_DATA_BYTE)
+            return false;
+    }
+    return true;
+}
+
+static void noteEchoFrame(bool fromCanA)
+{
+    ++totalEchoFramesReceived;
+    ++windowEchoFramesReceived;
+    if (fromCanA)
+    {
+        ++canAEchoFramesReceived;
+        ++windowCanAEchoFramesReceived;
+    }
+    else
+    {
+        ++canBEchoFramesReceived;
+        ++windowCanBEchoFramesReceived;
+    }
+}
+
+// ─── 读取接收队列并统计另一端回发帧 ───
+static void readAndCountIncoming()
 {
     CanFrame rxFrame;
     if (canAReady)
     {
         while (canA.read(rxFrame))
         {
-            printReceivedFrame("CAN_A", rxFrame);
+            if (isEchoFrame(rxFrame))
+                noteEchoFrame(true);
         }
     }
     if (canBReady)
     {
         while (canB.read(rxFrame))
         {
-            printReceivedFrame("CAN_B", rxFrame);
+            if (isEchoFrame(rxFrame))
+                noteEchoFrame(false);
         }
     }
+}
+
+static void printAndAdvancePerfWindow()
+{
+    const uint32_t elapsedMs = millis() - rateWindowStartMs;
+    const float seconds = elapsedMs / 1000.0f;
+    const float actualAttemptFps = seconds > 0.0f ? windowFramesAttempted / seconds : 0.0f;
+    const float actualTxFps = seconds > 0.0f ? windowFramesSent / seconds : 0.0f;
+    const float actualRxFps = seconds > 0.0f ? windowEchoFramesReceived / seconds : 0.0f;
+    const float windowRatio = windowFramesSent > 0 ? (windowEchoFramesReceived * 100.0f) / windowFramesSent : 0.0f;
+    const float totalRatio = totalFramesSent > 0 ? (totalEchoFramesReceived * 100.0f) / totalFramesSent : 0.0f;
+
+    Serial.printf("[PERF] target=%ufps attempt=%lu tx_ok=%lu tx_fail=%lu rx=%lu ratio=%.1f%% attempt_fps=%.1f tx_fps=%.1f rx_fps=%.1f | A ok=%lu fail=%lu rx=%lu B ok=%lu fail=%lu rx=%lu | total ok=%lu fail=%lu rx=%lu ratio=%.1f%%\n",
+                  targetFps,
+                  static_cast<unsigned long>(windowFramesAttempted),
+                  static_cast<unsigned long>(windowFramesSent),
+                  static_cast<unsigned long>(windowFramesFailed),
+                  static_cast<unsigned long>(windowEchoFramesReceived),
+                  windowRatio,
+                  actualAttemptFps,
+                  actualTxFps,
+                  actualRxFps,
+                  static_cast<unsigned long>(windowCanAFramesSent),
+                  static_cast<unsigned long>(windowCanAFramesFailed),
+                  static_cast<unsigned long>(windowCanAEchoFramesReceived),
+                  static_cast<unsigned long>(windowCanBFramesSent),
+                  static_cast<unsigned long>(windowCanBFramesFailed),
+                  static_cast<unsigned long>(windowCanBEchoFramesReceived),
+                  static_cast<unsigned long>(totalFramesSent),
+                  static_cast<unsigned long>(totalFramesFailed),
+                  static_cast<unsigned long>(totalEchoFramesReceived),
+                  totalRatio);
+
+    windowFramesAttempted = 0;
+    windowFramesSent = 0;
+    windowFramesFailed = 0;
+    windowCanAFramesSent = 0;
+    windowCanBFramesSent = 0;
+    windowCanAFramesFailed = 0;
+    windowCanBFramesFailed = 0;
+    windowEchoFramesReceived = 0;
+    windowCanAEchoFramesReceived = 0;
+    windowCanBEchoFramesReceived = 0;
+    rateWindowStartMs = millis();
+
+    if (targetFps < MAX_TARGET_FPS)
+    {
+        targetFps += TARGET_FPS_STEP;
+        if (targetFps > MAX_TARGET_FPS)
+            targetFps = MAX_TARGET_FPS;
+    }
+}
+
+static void updatePerfWindow()
+{
+    if (rateWindowStartMs == 0)
+    {
+        rateWindowStartMs = millis();
+        return;
+    }
+
+    if (millis() - rateWindowStartMs >= RATE_STEP_INTERVAL_MS)
+        printAndAdvancePerfWindow();
 }
 
 // ─── 解析 "AA BB CC" 格式的十六进制数据字符串 ───
@@ -111,119 +227,154 @@ static uint8_t parseHexData(const char *hexStr, uint8_t *outBuf, uint8_t maxLen)
     return count;
 }
 
-// ─── 打开/重置 ndjson 文件 ───
-static bool openNdjsonFile()
+static bool appendReplayFrame(JsonObject f)
 {
-    if (ndjsonFile)
-        ndjsonFile.close();
+    ReplayFrame replayFrame;
+    replayFrame.frame.id = f["ID"].as<uint32_t>();
+    replayFrame.frame.dlc = f["DLC"].as<uint8_t>();
+    if (replayFrame.frame.dlc > 8)
+        replayFrame.frame.dlc = 8;
 
-    ndjsonFile = LittleFS.open(NDJSON_PATH, "r");
+    const char *dataStr = f["DATA"];
+    if (dataStr)
+    {
+        memset(replayFrame.frame.data, 0, sizeof(replayFrame.frame.data));
+        parseHexData(dataStr, replayFrame.frame.data, replayFrame.frame.dlc);
+    }
+
+    const char *bus = f["BUS"];
+    replayFrame.toCanA = bus && strcmp(bus, "CAN_A") == 0;
+    replayFrames.push_back(replayFrame);
+    return true;
+}
+
+static bool loadReplayFrames()
+{
+    replayFrames.clear();
+
+    File ndjsonFile = LittleFS.open(NDJSON_PATH, "r");
     if (!ndjsonFile)
     {
         Serial.printf("无法打开 %s\n", NDJSON_PATH);
         return false;
     }
-    return true;
-}
 
-// ─── 处理单行 ndjson，解析并发送其中所有帧 ───
-static void processLine(const String &line)
-{
-    // 使用预先配置的 filter 只解析我们需要的字段，大幅节省 CPU 和内存
-    JsonDocument doc;
-    DeserializationError err = deserializeJson(doc, line, DeserializationOption::Filter(filterDoc));
-    if (err)
+    uint32_t lineNumber = 0;
+    while (ndjsonFile.available())
     {
-        Serial.printf("JSON 解析失败: %s\n", err.c_str());
-        return;
+        String line = ndjsonFile.readStringUntil('\n');
+        line.trim();
+        ++lineNumber;
+        if (line.length() == 0)
+            continue;
+
+        JsonDocument doc;
+        DeserializationError err = deserializeJson(doc, line, DeserializationOption::Filter(filterDoc));
+        if (err)
+        {
+            Serial.printf("JSON 解析失败 line=%lu: %s\n",
+                          static_cast<unsigned long>(lineNumber),
+                          err.c_str());
+            continue;
+        }
+
+        JsonArray frames = doc["payload"]["FRAMES"];
+        if (frames.isNull())
+            continue;
+
+        for (JsonObject f : frames)
+            appendReplayFrame(f);
     }
 
-    JsonArray frames = doc["payload"]["FRAMES"];
-    if (frames.isNull())
-        return;
+    ndjsonFile.close();
+    Serial.printf("预加载回放帧: %lu\n", static_cast<unsigned long>(replayFrames.size()));
+    return !replayFrames.empty();
+}
 
-    for (JsonObject f : frames)
+static void noteSentFrame(bool toCanA, bool sent)
+{
+    ++totalFramesAttempted;
+    ++windowFramesAttempted;
+
+    if (sent)
     {
-        // 帧间间隔控制 (微秒级)
-        if (FRAME_INTERVAL_US > 0)
+        ++totalFramesSent;
+        ++windowFramesSent;
+        if (toCanA)
         {
-            while (micros() - lastSendUs < FRAME_INTERVAL_US)
-            {
-                readAndPrintIncoming();
-                yield();
-            }
+            ++canAFramesSent;
+            ++windowCanAFramesSent;
         }
         else
         {
-            readAndPrintIncoming();
+            ++canBFramesSent;
+            ++windowCanBFramesSent;
         }
+        return;
+    }
 
-        CanFrame frame;
-        frame.id = f["ID"].as<uint32_t>();
-        frame.dlc = f["DLC"].as<uint8_t>();
-        if (frame.dlc > 8)
-            frame.dlc = 8;
-
-        const char *dataStr = f["DATA"];
-        if (dataStr)
-        {
-            memset(frame.data, 0, sizeof(frame.data));
-            parseHexData(dataStr, frame.data, frame.dlc);
-        }
-
-        // 根据 BUS 字段路由到对应总线
-        const char *bus = f["BUS"];
-        if (bus && strcmp(bus, "CAN_A") == 0)
-        {
-            if (canAReady)
-            {
-                canA.send(frame);
-                canAFramesSent++;
-            }
-        }
-        else
-        {
-            // 默认发 CAN_B
-            if (canBReady)
-            {
-                canB.send(frame);
-                canBFramesSent++;
-            }
-        }
-
-        totalFramesSent++;
-        lastSendUs = micros();
+    ++totalFramesFailed;
+    ++windowFramesFailed;
+    if (toCanA)
+    {
+        ++canAFramesFailed;
+        ++windowCanAFramesFailed;
+    }
+    else
+    {
+        ++canBFramesFailed;
+        ++windowCanBFramesFailed;
     }
 }
 
-// ─── 串口打印心跳状态 ───
-static uint32_t lastHeartbeatMs = 0;
-static void printHeartbeat()
+static void sendReplayFrame(const ReplayFrame &replayFrame)
 {
-    uint32_t now = millis();
-    if (now - lastHeartbeatMs < 5000)
-        return;
-    lastHeartbeatMs = now;
+    bool sent = false;
+    if (replayFrame.toCanA)
+    {
+        if (canAReady)
+            sent = canA.trySend(replayFrame.frame);
+    }
+    else
+    {
+        if (canBReady)
+            sent = canB.trySend(replayFrame.frame, 0);
+    }
 
-    TWAIDriver::DiagInfo diag = canB.getDiagnostics();
-    Serial.printf("[REPLAY] loop=%lu total=%lu A=%lu B=%lu | CAN_B %s rx_err=%lu tx_err=%lu\n",
-                  static_cast<unsigned long>(loopCount),
-                  static_cast<unsigned long>(totalFramesSent),
-                  static_cast<unsigned long>(canAFramesSent),
-                  static_cast<unsigned long>(canBFramesSent),
-                  diag.state,
-                  static_cast<unsigned long>(diag.rxErrors),
-                  static_cast<unsigned long>(diag.txErrors));
+    noteSentFrame(replayFrame.toCanA, sent);
+}
+
+static void sendDueReplayFrames()
+{
+    if (!replayReady || replayFrames.empty())
+        return;
+
+    uint8_t burst = 0;
+    const uint32_t frameIntervalUs = targetFrameIntervalUs();
+    uint32_t nowUs = micros();
+    if (nextSendUs == 0)
+        nextSendUs = nowUs;
+
+    while (static_cast<int32_t>(nowUs - nextSendUs) >= 0 && burst < MAX_SEND_BURST_PER_LOOP)
+    {
+        sendReplayFrame(replayFrames[replayIndex]);
+        replayIndex = (replayIndex + 1) % replayFrames.size();
+        nextSendUs += frameIntervalUs;
+        ++burst;
+        nowUs = micros();
+    }
+
+    if (burst == MAX_SEND_BURST_PER_LOOP && static_cast<int32_t>(nowUs - nextSendUs) > static_cast<int32_t>(frameIntervalUs * MAX_SEND_BURST_PER_LOOP))
+        nextSendUs = nowUs + frameIntervalUs;
 }
 
 // ─── Arduino 入口 ───
 void setup()
 {
-    // 将波特率提升至 921600，防止大量的 RX 打印阻塞 CAN 发送
-    Serial.begin(921600);
+    Serial.begin(115200);
     delay(1000);
     Serial.println();
-    Serial.println("=== CAN Dual-Bus NDJSON Replay (Optimized) ===");
+    Serial.println("=== CAN Dual-Bus NDJSON Replay Perf Test ===");
 
     // 初始化 JSON 过滤器
     filterDoc["payload"]["FRAMES"][0]["BUS"] = true;
@@ -250,6 +401,13 @@ void setup()
     File f = LittleFS.open(NDJSON_PATH, "r");
     Serial.printf("NDJSON 文件大小: %lu bytes\n", static_cast<unsigned long>(f.size()));
     f.close();
+
+    replayReady = loadReplayFrames();
+    if (!replayReady)
+    {
+        Serial.println("没有可回放帧，停止性能测试");
+        return;
+    }
 
     // 启用发送
     setCanTxEnabled(true);
@@ -283,47 +441,16 @@ void setup()
         Serial.println("CAN_B 初始化失败!");
     }
 
-    Serial.println("开始双总线循环回放...");
+    nextSendUs = micros();
+    rateWindowStartMs = millis();
+    Serial.println("开始双总线回放性能测试...");
 }
 
 void loop()
 {
-    // 读取并打印接收到的消息
-    readAndPrintIncoming();
-
-    // 文件未打开或已读完 → 重新打开（循环回放）
-    if (!ndjsonFile || !ndjsonFile.available())
-    {
-        if (ndjsonFile)
-        {
-            ndjsonFile.close();
-            Serial.printf("[REPLAY] 第 %lu 轮完成，A=%lu B=%lu 总计=%lu\n",
-                          static_cast<unsigned long>(loopCount + 1),
-                          static_cast<unsigned long>(canAFramesSent),
-                          static_cast<unsigned long>(canBFramesSent),
-                          static_cast<unsigned long>(totalFramesSent));
-        }
-        loopCount++;
-
-        if (!openNdjsonFile())
-        {
-            delay(5000);
-            return;
-        }
-        Serial.printf("[REPLAY] 开始第 %lu 轮回放\n", static_cast<unsigned long>(loopCount));
-    }
-
-    // 逐行读取处理
-    if (ndjsonFile.available())
-    {
-        String line = ndjsonFile.readStringUntil('\n');
-        line.trim();
-        if (line.length() > 0)
-        {
-            processLine(line);
-        }
-    }
-
-    // 心跳
-    printHeartbeat();
+    readAndCountIncoming();
+    updatePerfWindow();
+    sendDueReplayFrames();
+    readAndCountIncoming();
+    updatePerfWindow();
 }

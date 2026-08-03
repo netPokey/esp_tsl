@@ -157,18 +157,25 @@ public:
 
     
 
-    void send(const CanFrame &frame) override
+    bool trySend(const CanFrame &frame)
     {
         if (!driverReady_ || currentMode_ != CanBusMode::Normal || !shouldAllowCanTx())
-            return;
+            return false;
 
         struct can_frame rawFrame = {};
         rawFrame.can_id = frame.id & CAN_SFF_MASK;
         rawFrame.can_dlc = (frame.dlc <= 8) ? frame.dlc : 8;
         memcpy(rawFrame.data, frame.data, rawFrame.can_dlc);
 
-        if (controller_.sendMessage(&rawFrame) != MCP2515::ERROR_OK && controller_.checkError())
+        const bool sent = controller_.sendMessage(&rawFrame) == MCP2515::ERROR_OK;
+        if (!sent && controller_.checkError())
             controller_.clearTXInterrupts();
+        return sent;
+    }
+
+    void send(const CanFrame &frame) override
+    {
+        (void)trySend(frame);
     }
 
     // 累计"真正的接收 FIFO 溢出"次数(只统计 RX0OVR/RX1OVR 上升沿)。

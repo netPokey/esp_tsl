@@ -122,10 +122,10 @@ public:
         return true;
     }
 
-    void send(const CanFrame &frame) override
+    bool trySend(const CanFrame &frame, TickType_t timeoutTicks = 0)
     {
         if (!driverReady_ || currentMode_ != CanBusMode::Normal || !shouldAllowCanTx())
-            return;
+            return false;
 
         twai_message_t rawMessage = {};
         uint8_t dlc = (frame.dlc <= 8) ? frame.dlc : 8;
@@ -133,11 +133,17 @@ public:
         rawMessage.data_length_code = dlc;
         memcpy(rawMessage.data, frame.data, dlc);
 
-        if (twai_transmit(&rawMessage, pdMS_TO_TICKS(2)) != ESP_OK)
-        {
-            if (isBusOff())
-                recoverWithCooldown();
-        }
+        if (twai_transmit(&rawMessage, timeoutTicks) == ESP_OK)
+            return true;
+
+        if (isBusOff())
+            recoverWithCooldown();
+        return false;
+    }
+
+    void send(const CanFrame &frame) override
+    {
+        (void)trySend(frame, pdMS_TO_TICKS(2));
     }
 
     // TWAI 总线诊断快照。
