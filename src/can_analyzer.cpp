@@ -1,15 +1,18 @@
 #include <Arduino.h>
 #include <LittleFS.h>
 #include <esp_heap_caps.h>
+#include <esp_system.h>
 #include <memory>
 
 #include "analyzer/analyzer_control.h"
 #include "analyzer/analyzer_web.h"
 #include "analyzer/analyzer_wifi.h"
+#include "analyzer/analyzer_upload_config.h"
 #include "analyzer/bus_stats.h"
 #include "analyzer/frame_queue.h"
 #include "analyzer/id_table.h"
 #include "analyzer/rx_task.h"
+#include "can_batch_uploader.h"
 #include "can_helpers.h"
 #include "drivers/mcp2515_driver.h"
 #include "drivers/twai_driver.h"
@@ -33,6 +36,7 @@ FrameQueue g_queue;
 
 IdTable g_table;          // 每 ID 状态表，实际存储位于 PSRAM（见 setup 中分配）。
 BusStatsTracker g_stats;  // 总线级统计（负载/帧率等）。
+CanBatchUploader g_uploader;  // 可选 HTTP 批量上传；默认关闭，不影响本地监听与页面。
 
 // 两路 CAN 驱动用 unique_ptr 延迟构造：构造需引脚参数，故放到 setup 内 new。
 std::unique_ptr<MCP2515Driver> g_canA;
@@ -91,9 +95,19 @@ void setup()
                 canBOk ? g_canB.get() : nullptr,
                 &g_queue);
 
-    // WiFi + Web：把队列/状态表/统计的指针交给 Web 层（loopTask 消费侧）。
+    // 加载上传配置。首次启动默认 off；低流量关键帧满 1 秒也会形成部分批次。
+    AnalyzerUploadConfig uploadConfig;
+    if (!analyzerUploadLoad(uploadConfig))
+        uploadConfig = analyzerUploadDefaultConfig();
+    char deviceId[40];
+    snprintf(deviceId, sizeof(deviceId), "can-analyzer-%012llX",
+             static_cast<unsigned long long>(ESP.getEfuseMac()));
+    g_uploader.begin(deviceId);
+    g_uploader.configure(uploadConfig.mode, uploadConfig.url, 1000);
+
+    // WiFi + Web：把队列/状态表/统计/上传器交给 Web 层（loopTask 消费侧）。
     const String ip = analyzerWifiBegin();
-    analyzerWebSetContext(&g_queue, &g_table, &g_stats);
+    analyzerWebSetContext(&g_queue, &g_table, &g_stats, &g_uploader);
     analyzerWebBegin();
 
     analyzerWebLogPrintf("CAN analyzer ready (listen-only): http://%s", ip.c_str());

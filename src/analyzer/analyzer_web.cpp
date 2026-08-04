@@ -1,7 +1,9 @@
 #include "analyzer/analyzer_web.h"
 #include "analyzer/analyzer_control.h"
 #include "analyzer/analyzer_wifi.h"
+#include "analyzer/analyzer_upload_config.h"
 #include "analyzer/ws_protocol.h"
+#include "can_batch_uploader.h"
 #include "can_helpers.h"
 
 #include <Arduino.h>
@@ -34,6 +36,7 @@ AsyncWebSocket ws("/ws");
 FrameQueue *g_queue = nullptr;
 IdTable *g_table = nullptr;
 BusStatsTracker *g_stats = nullptr;
+CanBatchUploader *g_uploader = nullptr;
 
 // ---- 设备日志环形缓冲：把诊断/串口消息透传到网页(/api/log) ----
 // 设备在车上接 CAN 时通常无法同时连 USB 读串口，故把日志存这里供浏览器查看。
@@ -88,6 +91,7 @@ constexpr size_t kMaxFlushesPerPush = 16;
 
 // WiFi POST 只接收 ssid/pass，256 字节足够；超限直接 400，防止 Async 回调里堆分配。
 constexpr size_t kMaxWifiJsonBytes = 256;
+constexpr size_t kMaxUploadJsonBytes = 320;
 constexpr uint32_t kPowerActionDelayMs = 200;
 constexpr uint32_t kShutdownSleepDelayMs = 100;
 char g_wifiBody[kMaxWifiJsonBytes + 1] = {};
@@ -95,6 +99,11 @@ portMUX_TYPE g_wifiMux = portMUX_INITIALIZER_UNLOCKED;
 portMUX_TYPE g_powerMux = portMUX_INITIALIZER_UNLOCKED;
 AnalyzerWifiCredentials g_pendingWifi;
 volatile bool g_pendingWifiValid = false;
+portMUX_TYPE g_uploadMux = portMUX_INITIALIZER_UNLOCKED;
+AnalyzerUploadConfig g_pendingUpload;
+volatile bool g_pendingUploadValid = false;
+bool g_uploadApplyFailed = false;
+char g_uploadApplyError[48] = {};
 
 // 电源动作分两阶段延迟执行：HTTP 回调只设置状态，主循环到点后执行。
 // ShutdownPrepare 先关闭 TX，再延迟进入深睡，让 JSON 响应有机会发回浏览器。
@@ -119,6 +128,34 @@ String wifiStatusJson()
     doc["ip"] = st.ip;
     doc["ssid"] = st.ssid;
     doc["pass"] = st.pass;
+    String out;
+    serializeJson(doc, out);
+    return out;
+}
+
+String uploadStatusJson()
+{
+    const CanUploadStatusSnapshot st = g_uploader ? g_uploader->snapshot() : CanUploadStatusSnapshot{};
+    JsonDocument doc;
+    doc["ok"] = g_uploader != nullptr && g_uploader->taskReady();
+    JsonObject config = doc["config"].to<JsonObject>();
+    config["mode"] = analyzerUploadModeName(st.mode);
+    config["url"] = st.url;
+    JsonObject apply = doc["apply"].to<JsonObject>();
+    apply["pending"] = g_pendingUploadValid;
+    apply["failed"] = g_uploadApplyFailed;
+    apply["last_error"] = g_uploadApplyError;
+    JsonObject runtime = doc["runtime"].to<JsonObject>();
+    runtime["wifi_ready"] = WiFi.status() == WL_CONNECTED;
+    runtime["in_flight"] = st.uploadInProgress;
+    runtime["pending_frames"] = st.pending;
+    runtime["batch_seq"] = st.batchSeq;
+    runtime["sent_batches"] = st.sentBatches;
+    runtime["failed_batches"] = st.failedBatches;
+    runtime["upload_dropped_frames"] = st.uploadDropped;
+    runtime["config_discarded_frames"] = st.configDiscarded;
+    runtime["filtered_frames"] = st.filteredFrames;
+    runtime["last_http"] = st.lastHttpCode;
     String out;
     serializeJson(doc, out);
     return out;
@@ -183,6 +220,56 @@ void processPendingWifi()
         analyzerWifiSaveAndConnect(credentials.ssid, credentials.pass);
 }
 
+bool enqueuePendingUpload(const AnalyzerUploadConfig &config)
+{
+    bool accepted = false;
+    portENTER_CRITICAL(&g_uploadMux);
+    if (!g_pendingUploadValid)
+    {
+        g_pendingUpload = config;
+        g_pendingUploadValid = true;
+        accepted = true;
+    }
+    portEXIT_CRITICAL(&g_uploadMux);
+    return accepted;
+}
+
+bool takePendingUpload(AnalyzerUploadConfig &config)
+{
+    bool found = false;
+    portENTER_CRITICAL(&g_uploadMux);
+    if (g_pendingUploadValid)
+    {
+        config = g_pendingUpload;
+        g_pendingUploadValid = false;
+        found = true;
+    }
+    portEXIT_CRITICAL(&g_uploadMux);
+    return found;
+}
+
+void processPendingUpload()
+{
+    AnalyzerUploadConfig config;
+    if (!takePendingUpload(config))
+        return;
+
+    g_uploadApplyFailed = false;
+    g_uploadApplyError[0] = '\0';
+    if (!analyzerUploadSave(config))
+    {
+        g_uploadApplyFailed = true;
+        strlcpy(g_uploadApplyError, "nvs_write_failed", sizeof(g_uploadApplyError));
+        return;
+    }
+    if (!g_uploader || !g_uploader->taskReady() ||
+        !g_uploader->configure(config.mode, config.url, 1000))
+    {
+        g_uploadApplyFailed = true;
+        strlcpy(g_uploadApplyError, "uploader_unavailable", sizeof(g_uploadApplyError));
+    }
+}
+
 // 主循环中的电源状态机。所有真正会断网/重启/深睡的操作都集中在这里执行。
 void processPendingPowerAction()
 {
@@ -230,8 +317,14 @@ void drainQueueIntoTable()
     CapturedFrame cap;
     while (g_queue->pop(cap))
     {
-        if (cap.id >= kStdIdCount)
+        if (cap.id >= kStdIdCount || cap.channel >= kChannelCount)
             continue;
+        if (g_uploader)
+        {
+            const CanBusId bus = cap.channel == 0 ? CanBusId::A : CanBusId::B;
+            g_uploader->noteCaptured(bus, static_cast<uint32_t>(cap.ts_us / 1000),
+                                     cap.id, cap.dlc, cap.data);
+        }
         if (g_stats)
             g_stats->noteRx(cap);
         if (g_table)
@@ -352,7 +445,6 @@ void analyzerWebLogInit()
 // 格式化一行日志：tee 到 Serial(USB 在场时仍可看)，并存入环形缓冲供网页 /api/log 读取。
 void analyzerWebLogPrintf(const char *fmt, ...)
 {
-    Serial.println(fmt);
     char line[kLogLineLen];
     va_list ap;
     va_start(ap, fmt);
@@ -376,11 +468,13 @@ void analyzerWebLogPrintf(const char *fmt, ...)
 }
 
 // 注入由组装点创建的核心对象；Web 层仅保存裸指针，不负责释放。
-void analyzerWebSetContext(FrameQueue *queue, IdTable *table, BusStatsTracker *stats)
+void analyzerWebSetContext(FrameQueue *queue, IdTable *table, BusStatsTracker *stats,
+                           CanBatchUploader *uploader)
 {
     g_queue = queue;
     g_table = table;
     g_stats = stats;
+    g_uploader = uploader;
 }
 
 // 注册所有 HTTP/WS 路由。当前没有任何入站 WS 命令，WebSocket 只做服务器推送。
@@ -408,6 +502,66 @@ void analyzerWebBegin()
     server.on("/api/wifi", HTTP_GET, [](AsyncWebServerRequest *request) {
         request->send(200, "application/json", wifiStatusJson());
     });
+
+    server.on("/api/upload", HTTP_GET, [](AsyncWebServerRequest *request) {
+        request->send(200, "application/json", uploadStatusJson());
+    });
+
+    server.on("/api/upload", HTTP_POST,
+              [](AsyncWebServerRequest *) {},
+              nullptr,
+              [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+                  if (!analyzerWebBodyChunkIsValid(index, len, total, kMaxUploadJsonBytes))
+                  {
+                      request->send(400, "application/json", "{\"ok\":false,\"error\":\"body_too_large\"}");
+                      return;
+                  }
+                  if (g_pendingUploadValid)
+                  {
+                      request->send(409, "application/json", "{\"ok\":false,\"error\":\"pending_busy\"}");
+                      return;
+                  }
+                  if (index == 0)
+                  {
+                      char *body = static_cast<char *>(malloc(total + 1));
+                      if (!body)
+                      {
+                          request->send(500, "application/json", "{\"ok\":false,\"error\":\"no_memory\"}");
+                          return;
+                      }
+                      body[total] = '\0';
+                      request->_tempObject = body;
+                  }
+                  char *body = static_cast<char *>(request->_tempObject);
+                  if (!body)
+                      return;
+                  if (len > 0)
+                      memcpy(body + index, data, len);
+                  if (!analyzerWebBodyChunkCompletes(index, len, total))
+                      return;
+
+                  JsonDocument doc;
+                  const DeserializationError error = deserializeJson(doc, body, total);
+                  free(body);
+                  request->_tempObject = nullptr;
+                  if (error)
+                  {
+                      request->send(400, "application/json", "{\"ok\":false,\"error\":\"invalid_json\"}");
+                      return;
+                  }
+                  AnalyzerUploadConfig config;
+                  if (!analyzerUploadSanitizeConfig(doc["mode"] | "", doc["url"] | "", config))
+                  {
+                      request->send(400, "application/json", "{\"ok\":false,\"error\":\"invalid_config\"}");
+                      return;
+                  }
+                  if (!enqueuePendingUpload(config))
+                  {
+                      request->send(409, "application/json", "{\"ok\":false,\"error\":\"pending_busy\"}");
+                      return;
+                  }
+                  request->send(200, "application/json", "{\"ok\":true,\"pending\":true}");
+              });
 
     // AsyncWebServer 以分片方式交付 POST body；这里手动聚合到固定缓冲，避免动态分配。
     server.on("/api/wifi", HTTP_POST,
@@ -462,6 +616,9 @@ void analyzerWebBegin()
 void analyzerWebLoop()
 {
     drainQueueIntoTable();
+    processPendingUpload();
+    if (g_uploader)
+        g_uploader->loop();
     processPendingWifi();
     processPendingPowerAction();
     const uint32_t now = millis();

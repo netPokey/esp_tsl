@@ -13,7 +13,7 @@ input[type="number"] { width: 56px; }
 #status { padding: 6px 10px; color: #888; }
 .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 8px; }
 section { overflow-x: auto; }
-table { width: 100%; border-collapse: collapse; font-size: 12px; min-width: 720px; }
+table { width: 100%; border-collapse: collapse; font-size: 12px; min-width: 980px; }
 th, td { border: 1px solid #333; padding: 2px 5px; text-align: left; }
 h2 { margin: 4px 0; }
 /* 行背景按 change_score 分级，帮助快速定位变化活跃的 ID。 */
@@ -34,10 +34,14 @@ tr.activity-high { background: #331414; }
 .network-grid { display: grid; grid-template-columns: repeat(4, minmax(150px, 1fr)); gap: 8px; align-items: end; }
 .network-grid label { display: flex; flex-direction: column; gap: 3px; color: #aaa; }
 .network-grid input { width: 100%; }
-#wifi-status { color: #aaa; grid-column: span 4; }
+#wifi-status, #upload-status { color: #aaa; grid-column: span 4; }
+#upload-url { min-width: 280px; }
+.decode-cell { min-width: 260px; max-width: 460px; white-space: normal; color: #b7d7ff; }
+.decode-detail { margin-bottom: 5px; color: #b7d7ff; white-space: normal; }
+.decode-note { color: #999; }
 @media (max-width: 900px) {
   .grid, .network-grid { grid-template-columns: 1fr; }
-  #wifi-status { grid-column: span 1; }
+  #wifi-status, #upload-status { grid-column: span 1; }
 }
 /* 信号定位：噪音位灰掉，候选位（静止稳定、触发后才变）高亮绿。 */
 .bit.noise { opacity: 0.18; }

@@ -34,5 +34,5 @@ String analyzerWifiBegin();
 AnalyzerWifiStatus analyzerWifiStatus();
 // 保存新凭据并立即尝试 STA；失败时回退 AP，返回是否成功连上 STA。
 bool analyzerWifiSaveAndConnect(const char *ssid, const char *pass);
-// 强制开启默认 AP：CAN-Analyzer / 1234567890。
+// 强制开启默认 AP：tsl_can / 1234567890。
 void analyzerWifiStartAp();

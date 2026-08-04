@@ -26,6 +26,12 @@ const wifiRefreshBtn = document.getElementById('wifi-refresh-btn');
 const deviceRestartBtn = document.getElementById('device-restart-btn');
 const deviceShutdownBtn = document.getElementById('device-shutdown-btn');
 const wifiStatus = document.getElementById('wifi-status');
+const uploadUrl = document.getElementById('upload-url');
+const uploadMode = document.getElementById('upload-mode');
+const uploadSaveBtn = document.getElementById('upload-save-btn');
+const uploadRefreshBtn = document.getElementById('upload-refresh-btn');
+const uploadStatus = document.getElementById('upload-status');
+const canDecoder = globalThis.ANALYZER_CAN_DECODER;
 const tbody = { 0: document.querySelector('#tbl-a tbody'), 1: document.querySelector('#tbl-b tbody') };
 const hideSelectedBtn = document.getElementById('hide-selected-btn');
 const unhideAllBtn = document.getElementById('unhide-all-btn');
@@ -124,6 +130,29 @@ function rowClass(score) {
   if (score >= 5) return 'activity-med';
   return 'activity-low';
 }
+function formatDecodedSignal(signal) {
+  const value = signal.enumLabel !== undefined ? signal.enumLabel : Number.isInteger(signal.value) ? signal.value : Number(signal.value).toFixed(3).replace(/\.?0+$/, '');
+  return `${signal.name}=${value}`;
+}
+function decodeSummary(decoded) {
+  if (!decoded || decoded.status === 'unknown') return '—';
+  if (decoded.status === 'invalid_dlc') return `${decoded.name} · DLC 不足`;
+  if (decoded.status === 'listed') return `${decoded.name} · 已识别，暂无可靠逐位解析`;
+  if (decoded.status === 'unsupported_conflict') return `${decoded.name} · bus/版本冲突，未解析`;
+  const signals = (decoded.signals || []).slice(0, 3).map(formatDecodedSignal).join(' · ');
+  return signals ? `${decoded.name} · ${signals}` : decoded.name;
+}
+function decodeDetailText(decoded) {
+  if (!decoded || decoded.status === 'unknown') return '未收录此 CAN ID';
+  const lines = [`${decoded.message || ''} ${decoded.name || ''}`.trim()];
+  if (decoded.status === 'decoded') {
+    for (const signal of decoded.signals || []) lines.push(formatDecodedSignal(signal));
+  } else if (decoded.status === 'listed') lines.push('已识别，但文档没有足够可靠的逐位规则。');
+  else if (decoded.status === 'unsupported_conflict') lines.push('同 ID 在不同 bus/版本中语义冲突，当前不猜测解析。');
+  else if (decoded.status === 'invalid_dlc') lines.push('当前 DLC 不足，无法安全解析。');
+  if (decoded.note) lines.push(decoded.note);
+  return lines.join('\n');
+}
 // ===== 信号定位（bit 级噪音掩码）=====
 // 思路：先"学习静止噪音"几秒，记下静止时就在跳的 bit（计数器/校验/实时量）；再"开始抓取"后
 // 触发车内操作，只看 candMask = moveMask & ~noiseMask —— 即"静止时稳定、触发后才变"的 bit。
@@ -191,7 +220,7 @@ function ensureRows(rec) {
   bit.className = 'bit-view hidden';
   bit.dataset.manualHidden = '1';
   const bitTd = document.createElement('td');
-  bitTd.colSpan = 9;  // 新增了行末的勾选列
+  bitTd.colSpan = 10;  // 原始报文、解析列及行末勾选列
   bit.appendChild(bitTd);
 
   const idTd = document.createElement('td');
@@ -214,6 +243,8 @@ function ensureRows(rec) {
   }
 
   const dlcTd = document.createElement('td');
+  const decodeTd = document.createElement('td');
+  decodeTd.className = 'decode-cell';
   const countTd = document.createElement('td');
   const deltaTd = document.createElement('td');
   const periodTd = document.createElement('td');
@@ -231,6 +262,7 @@ function ensureRows(rec) {
   tr.appendChild(idTd);
   tr.appendChild(dlcTd);
   tr.appendChild(dataTd);
+  tr.appendChild(decodeTd);
   tr.appendChild(countTd);
   tr.appendChild(deltaTd);
   tr.appendChild(periodTd);
@@ -243,19 +275,29 @@ function ensureRows(rec) {
     bit.dataset.manualHidden = hiddenNow ? '1' : '0';
     if (!hiddenNow) {
       const r = records[key];
-      if (r) bitTd.innerHTML = bitHtml(r);
+      if (r) renderDetail(bitTd, r);
     }
   };
 
   rows[key] = {
     tr, bit, bitTd, byteSpans, cb, key,idCandSpan,
-    dlcTd, countTd, deltaTd, periodTd, jitterTd, scoreTd,
+    dlcTd, decodeTd, countTd, deltaTd, periodTd, jitterTd, scoreTd,
     lastClass: '',
   };
   tbody[rec.ch].appendChild(tr);
   tbody[rec.ch].appendChild(bit);
   needSort = true;
   return rows[key];
+}
+function renderDetail(cell, rec) {
+  cell.textContent = '';
+  const decoded = document.createElement('div');
+  decoded.className = 'decode-detail';
+  decoded.textContent = decodeDetailText(rec.decoded);
+  cell.appendChild(decoded);
+  const bits = document.createElement('div');
+  bits.innerHTML = bitHtml(rec);
+  cell.appendChild(bits);
 }
 // 根据一条记录增量更新已有 DOM。隐藏行不刷新内容，节省不可见行的渲染成本。
 // hiddenRow 可由调用方传入（已算过），省去一次 rowHidden/筛选计算。
@@ -289,6 +331,7 @@ function paintRecord(rec, hiddenRow) {
   }
 
   setText(pair.dlcTd, rec.dlc);
+  setText(pair.decodeTd, decodeSummary(rec.decoded));
   setText(pair.countTd, rec.count);
   setText(pair.deltaTd, rec.deltaMs);
   setText(pair.periodTd, rec.periodMs);
@@ -297,7 +340,7 @@ function paintRecord(rec, hiddenRow) {
 
   setText(pair.idCandSpan, rec.isNew ? '新ID' : (rec.candBits ? candBitLabels(rec) : ''));
 
-  if (!pair.bit.classList.contains('hidden')) pair.bitTd.innerHTML = bitHtml(rec);
+  if (!pair.bit.classList.contains('hidden')) renderDetail(pair.bitTd, rec);
 }
 
 // 排序只在顺序真的变化时移动 DOM。用 DocumentFragment 一次性重排，减少 reflow 次数。
@@ -409,6 +452,7 @@ function parseDelta(buf) {
       rec.data[b] = nb;
     }
     o += 8;
+    rec.decoded = canDecoder ? canDecoder.decodeCanRecord({ channel: ch, id, dlc: rec.dlc, data: rec.data }) : { status: 'unknown' };
     rec.sampled = true;
     if (analysisPhase === 'watching') {
       const had = rec.candBits > 0;
@@ -516,6 +560,44 @@ async function postDeviceAction(path, message, button) {
   }
 }
 
+function uploadModeText(mode) {
+  if (mode === 'all') return '发送全部';
+  if (mode === 'critical') return '仅关键 69 ID';
+  return '不发送';
+}
+async function refreshUploadStatus() {
+  try {
+    const r = await fetch('/api/upload');
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const s = await r.json();
+    uploadUrl.value = s.config?.url || '';
+    uploadMode.value = s.config?.mode || 'off';
+    const rt = s.runtime || {};
+    const apply = s.apply || {};
+    uploadStatus.textContent = `上传状态：${uploadModeText(s.config?.mode)} · WiFi=${rt.wifi_ready ? '就绪' : '未连接'} · 待发=${rt.pending_frames || 0} · 成功=${rt.sent_batches || 0} · 失败=${rt.failed_batches || 0} · 丢弃=${rt.upload_dropped_frames || 0} · HTTP=${rt.last_http || 0}${apply.pending ? ' · 配置应用中' : ''}${apply.last_error ? ' · ' + apply.last_error : ''}`;
+  } catch (e) {
+    uploadStatus.textContent = `上传状态获取失败：${e.message || e}`;
+  }
+}
+async function saveUploadConfig() {
+  uploadSaveBtn.disabled = true;
+  uploadStatus.textContent = '正在保存上传配置…';
+  try {
+    const r = await fetch('/api/upload', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: uploadMode.value, url: uploadUrl.value.trim() })
+    });
+    const s = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(s.error || `HTTP ${r.status}`);
+    uploadStatus.textContent = '上传配置已接收，正在应用…';
+    setTimeout(refreshUploadStatus, 400);
+  } catch (e) {
+    uploadStatus.textContent = `保存上传配置失败：${e.message || e}`;
+  } finally {
+    uploadSaveBtn.disabled = false;
+  }
+}
+
 async function refreshBusHealth() {
   try {
     const r = await fetch('/api/status');
@@ -525,6 +607,8 @@ async function refreshBusHealth() {
 }
 wifiConnectBtn.onclick = connectWifi;
 wifiRefreshBtn.onclick = refreshWifiStatus;
+uploadSaveBtn.onclick = saveUploadConfig;
+uploadRefreshBtn.onclick = refreshUploadStatus;
 deviceRestartBtn.onclick = () => {
   if (confirm('确定要重启设备吗？网页会短暂断开。'))
     postDeviceAction('/api/restart', '设备正在重启…', deviceRestartBtn);
@@ -657,8 +741,10 @@ setInterval(refreshVisible, 500);
 
 connect();
 refreshWifiStatus();
+refreshUploadStatus();
 refreshBusHealth();
 setInterval(refreshBusHealth, 2000);
+setInterval(() => { if (!document.hidden) refreshUploadStatus(); }, 2000);
 
 // 设备日志（/api/log）：把固件串口诊断拉到网页查看，约每 1.5s 自动刷新一次。
 const logView = document.getElementById('log-view');

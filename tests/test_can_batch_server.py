@@ -42,6 +42,25 @@ class CanBatchServerTest(unittest.TestCase):
             },
         )
 
+    def test_analyzer_payload_preserves_repeated_frames_and_bus(self):
+        payload = {
+            "device_id": "can-analyzer-test",
+            "batch_seq": 8,
+            "frames": [
+                {"seq": 10, "bus": "CAN_A", "ts": 100, "id": 0x107, "dlc": 8, "data": "00 01 02 03 04 05 06 07"},
+                {"seq": 11, "bus": "CAN_B", "ts": 101, "id": 0x107, "dlc": 8, "data": "10 11 12 13 14 15 16 17"},
+            ],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            result = append_batch(Path(tmp), payload, server_ts="2026-08-04T00:00:00Z")
+            lines = [json.loads(line) for line in (Path(tmp) / "can_frames.ndjson").read_text(encoding="utf-8").splitlines()]
+
+        self.assertEqual({"ok": True, "frames": 2}, result)
+        self.assertEqual([10, 11], [line["seq"] for line in lines])
+        self.assertEqual(["CAN_A", "CAN_B"], [line["bus"] for line in lines])
+        self.assertEqual([0x107, 0x107], [line["id"] for line in lines])
+        self.assertNotEqual(lines[0]["data"], lines[1]["data"])
+
 
 if __name__ == "__main__":
     unittest.main()

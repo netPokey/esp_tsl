@@ -35,9 +35,22 @@ class CanBatchUploaderFirmwareTest(unittest.TestCase):
 
     def test_uploader_releases_http_client_on_begin_failure(self):
         uploader = Path("include/can_batch_uploader.h").read_text(encoding="utf-8")
-        begin_failure_body = uploader.split("if (!http.begin(CAN_UPLOAD_DEFAULT_URL))", 1)[1].split("http.addHeader", 1)[0]
+        begin_failure_body = uploader.split("if (!http.begin(activeUploadUrl_))", 1)[1].split("http.addHeader", 1)[0]
 
         self.assertIn("http.end();", begin_failure_body)
+
+    def test_analyzer_uses_per_frame_uploader_and_runtime_config(self):
+        uploader = Path("include/can_batch_uploader.h").read_text(encoding="utf-8")
+        analyzer = Path("src/can_analyzer.cpp").read_text(encoding="utf-8")
+        web = Path("src/analyzer/analyzer_web.cpp").read_text(encoding="utf-8")
+
+        self.assertIn("CanUploadMode::Critical", uploader)
+        self.assertIn("isAnalyzerCriticalCanId", uploader)
+        self.assertIn("void noteCaptured", uploader)
+        self.assertIn("g_uploader.configure(uploadConfig.mode", analyzer)
+        self.assertIn('server.on("/api/upload", HTTP_GET', web)
+        self.assertIn('server.on("/api/upload", HTTP_POST', web)
+        self.assertIn("g_uploader->noteCaptured", web)
 
 
 if __name__ == "__main__":
