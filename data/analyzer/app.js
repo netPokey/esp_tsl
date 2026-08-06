@@ -28,7 +28,10 @@ const deviceShutdownBtn = document.getElementById('device-shutdown-btn');
 const wifiStatus = document.getElementById('wifi-status');
 const uploadUrl = document.getElementById('upload-url');
 const uploadMode = document.getElementById('upload-mode');
+const uploadBuses = document.getElementById('upload-buses');
 const uploadSaveBtn = document.getElementById('upload-save-btn');
+const uploadStartBtn = document.getElementById('upload-start-btn');
+const uploadStopBtn = document.getElementById('upload-stop-btn');
 const uploadRefreshBtn = document.getElementById('upload-refresh-btn');
 const uploadStatus = document.getElementById('upload-status');
 const canDecoder = globalThis.ANALYZER_CAN_DECODER;
@@ -579,10 +582,16 @@ async function refreshUploadStatus() {
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const s = await r.json();
     uploadUrl.value = s.config?.url || '';
-    uploadMode.value = s.config?.mode || 'off';
+    uploadMode.value = s.config?.filter || 'all';
+    uploadBuses.value = s.config?.buses || 'both';
     const rt = s.runtime || {};
     const apply = s.apply || {};
-    uploadStatus.textContent = `上传状态：${uploadModeText(s.config?.mode)} · WiFi=${rt.wifi_ready ? '就绪' : '未连接'} · 待发=${rt.pending_frames || 0} · 成功=${rt.sent_batches || 0} · 失败=${rt.failed_batches || 0} · 丢弃=${rt.upload_dropped_frames || 0} · HTTP=${rt.last_http || 0}${apply.pending ? ' · 配置应用中' : ''}${apply.last_error ? ' · ' + apply.last_error : ''}`;
+    const state = s.session?.state || 'inactive';
+    const active = state !== 'inactive';
+    uploadUrl.disabled = active; uploadMode.disabled = active; uploadBuses.disabled = active;
+    uploadSaveBtn.disabled = active; uploadStartBtn.disabled = active; uploadStopBtn.disabled = !active;
+    const sessionText = state === 'active' ? '正在上传（实时 CAN 表已暂停）' : state === 'stopping' ? '正在停止' : '未启动';
+    uploadStatus.textContent = `上传状态：${sessionText} · ${uploadModeText(s.config?.filter)} · 总线=${s.config?.buses || 'both'} · WiFi=${rt.wifi_ready ? '就绪' : '未连接'} · 待发=${rt.pending_frames || 0} · 成功=${rt.sent_batches || 0} · 失败=${rt.failed_batches || 0} · 丢弃=${rt.upload_dropped_frames || 0} · HTTP=${rt.last_http || 0}${apply.pending ? ' · 操作应用中' : ''}${apply.last_error ? ' · ' + apply.last_error : ''}`;
   } catch (e) {
     uploadStatus.textContent = `上传状态获取失败：${e.message || e}`;
   }
@@ -593,7 +602,7 @@ async function saveUploadConfig() {
   try {
     const r = await fetch('/api/upload', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode: uploadMode.value, url: uploadUrl.value.trim() })
+      body: JSON.stringify({ filter: uploadMode.value, buses: uploadBuses.value, url: uploadUrl.value.trim() })
     });
     const s = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(s.error || `HTTP ${r.status}`);
@@ -603,6 +612,21 @@ async function saveUploadConfig() {
     uploadStatus.textContent = `保存上传配置失败：${e.message || e}`;
   } finally {
     uploadSaveBtn.disabled = false;
+  }
+}
+
+async function uploadSessionAction(action) {
+  const button = action === 'start' ? uploadStartBtn : uploadStopBtn;
+  button.disabled = true;
+  try {
+    const r = await fetch(`/api/upload/${action}`, { method: 'POST' });
+    const s = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(s.error || `HTTP ${r.status}`);
+    uploadStatus.textContent = action === 'start' ? '正在开始上传…' : '正在停止上传…';
+    setTimeout(refreshUploadStatus, 300);
+  } catch (e) {
+    uploadStatus.textContent = `上传操作失败：${e.message || e}`;
+    button.disabled = false;
   }
 }
 
@@ -616,6 +640,8 @@ async function refreshBusHealth() {
 wifiConnectBtn.onclick = connectWifi;
 wifiRefreshBtn.onclick = refreshWifiStatus;
 uploadSaveBtn.onclick = saveUploadConfig;
+uploadStartBtn.onclick = () => uploadSessionAction('start');
+uploadStopBtn.onclick = () => uploadSessionAction('stop');
 uploadRefreshBtn.onclick = refreshUploadStatus;
 deviceRestartBtn.onclick = () => {
   if (confirm('确定要重启设备吗？网页会短暂断开。'))

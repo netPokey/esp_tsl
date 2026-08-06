@@ -12,6 +12,7 @@ namespace
 constexpr const char *kPrefsNamespace = "analyzer_upload";
 constexpr const char *kPrefsMode = "mode";
 constexpr const char *kPrefsUrl = "url";
+constexpr const char *kPrefsBuses = "buses";
 
 bool equalsIgnoreCase(const char *left, const char *right)
 {
@@ -161,7 +162,8 @@ bool analyzerUploadNormalizeUrl(const char *input, char *out, size_t outSize)
     {
         const size_t pathLength = static_cast<size_t>(inputEnd - path);
         if (!((pathLength == 1 && path[0] == '/') ||
-              (pathLength == 10 && memcmp(path, "/can/batch", 10) == 0)))
+              (pathLength == 10 && memcmp(path, "/can/batch", 10) == 0) ||
+              (pathLength == 14 && memcmp(path, "/can/batch-bin", 14) == 0)))
             return false;
     }
 
@@ -172,7 +174,7 @@ bool analyzerUploadNormalizeUrl(const char *input, char *out, size_t outSize)
         out[0] = '\0';
         return false;
     }
-    constexpr const char *kBatchPath = "/can/batch";
+    constexpr const char *kBatchPath = "/can/batch-bin";
     if (!appendText(out, outSize, offset, kBatchPath, strlen(kBatchPath)) || offset > kAnalyzerUploadMaxUrl)
     {
         out[0] = '\0';
@@ -181,26 +183,42 @@ bool analyzerUploadNormalizeUrl(const char *input, char *out, size_t outSize)
     return true;
 }
 
+const char *analyzerUploadBusesName(uint8_t mask)
+{
+    return mask == CAN_UPLOAD_BUS_A ? "a" : mask == CAN_UPLOAD_BUS_B ? "b" : "both";
+}
+
+bool analyzerUploadParseBuses(const char *text, uint8_t &out)
+{
+    if (equalsIgnoreCase(text, "a")) out = CAN_UPLOAD_BUS_A;
+    else if (equalsIgnoreCase(text, "b")) out = CAN_UPLOAD_BUS_B;
+    else if (equalsIgnoreCase(text, "both")) out = CAN_UPLOAD_BUS_BOTH;
+    else return false;
+    return true;
+}
+
 AnalyzerUploadConfig analyzerUploadDefaultConfig()
 {
     AnalyzerUploadConfig result;
-    result.mode = CanUploadMode::Off;
-    analyzerUploadNormalizeUrl(kAnalyzerUploadDefaultUrl, result.url, sizeof(result.url));
+    result.mode = CanUploadMode::All;
+    result.busMask = CAN_UPLOAD_BUS_BOTH;
+    analyzerUploadNormalizeUrl(CAN_UPLOAD_DEFAULT_BINARY_URL, result.url, sizeof(result.url));
     return result;
 }
 
-bool analyzerUploadSanitizeConfig(const char *mode,
-                                  const char *url,
-                                  AnalyzerUploadConfig &out)
+bool analyzerUploadSanitizeConfig(const char *mode, const char *buses,
+                                  const char *url, AnalyzerUploadConfig &out)
 {
     out = analyzerUploadDefaultConfig();
     CanUploadMode parsedMode;
+    uint8_t parsedBuses;
     char normalizedUrl[kAnalyzerUploadMaxUrl + 1] = {};
-    if (!analyzerUploadParseMode(mode, parsedMode) ||
+    if (!analyzerUploadParseMode(mode, parsedMode) || parsedMode == CanUploadMode::Off ||
+        !analyzerUploadParseBuses(buses, parsedBuses) ||
         !analyzerUploadNormalizeUrl(url, normalizedUrl, sizeof(normalizedUrl)))
         return false;
-
     out.mode = parsedMode;
+    out.busMask = parsedBuses;
     memcpy(out.url, normalizedUrl, strlen(normalizedUrl) + 1);
     return true;
 }
@@ -212,12 +230,14 @@ bool analyzerUploadLoad(AnalyzerUploadConfig &out)
     Preferences prefs;
     if (!prefs.begin(kPrefsNamespace, true))
         return false;
-    const String mode = prefs.getString(kPrefsMode, analyzerUploadModeName(out.mode));
+    String mode = prefs.getString(kPrefsMode, analyzerUploadModeName(out.mode));
     const String url = prefs.getString(kPrefsUrl, out.url);
+    const String buses = prefs.getString(kPrefsBuses, "both");
     prefs.end();
+    if (mode == "off") mode = "all";  // 旧 off 只表示旧会话状态，不迁移成自动上传。
 
     AnalyzerUploadConfig loaded;
-    if (!analyzerUploadSanitizeConfig(mode.c_str(), url.c_str(), loaded))
+    if (!analyzerUploadSanitizeConfig(mode.c_str(), buses.c_str(), url.c_str(), loaded))
         return false;
     out = loaded;
 #endif
@@ -227,7 +247,8 @@ bool analyzerUploadLoad(AnalyzerUploadConfig &out)
 bool analyzerUploadSave(const AnalyzerUploadConfig &config)
 {
     AnalyzerUploadConfig sanitized;
-    if (!analyzerUploadSanitizeConfig(analyzerUploadModeName(config.mode), config.url, sanitized))
+    if (!analyzerUploadSanitizeConfig(analyzerUploadModeName(config.mode),
+                                      analyzerUploadBusesName(config.busMask), config.url, sanitized))
         return false;
 #if defined(ARDUINO)
     Preferences prefs;
@@ -235,9 +256,11 @@ bool analyzerUploadSave(const AnalyzerUploadConfig &config)
         return false;
     const size_t modeWritten = prefs.putString(kPrefsMode, analyzerUploadModeName(sanitized.mode));
     const size_t urlWritten = prefs.putString(kPrefsUrl, sanitized.url);
+    const char *buses = analyzerUploadBusesName(sanitized.busMask);
+    const size_t busesWritten = prefs.putString(kPrefsBuses, buses);
     prefs.end();
     return modeWritten == strlen(analyzerUploadModeName(sanitized.mode)) &&
-           urlWritten == strlen(sanitized.url);
+           urlWritten == strlen(sanitized.url) && busesWritten == strlen(buses);
 #else
     (void)sanitized;
 #endif

@@ -8,7 +8,8 @@ class CanBatchUploaderFirmwareTest(unittest.TestCase):
         main_cpp = Path("src/main.cpp").read_text(encoding="utf-8")
         web_server = Path("include/web/web_server.h").read_text(encoding="utf-8")
 
-        self.assertIn("CAN_UPLOAD_BATCH_SIZE = 200", uploader)
+        uploader_types = Path("include/can_batch_uploader_types.h").read_text(encoding="utf-8")
+        self.assertIn("CAN_UPLOAD_BATCH_SIZE = 200", uploader_types)
         self.assertIn("http://1.116.182.175:48601/can/batch", uploader)
         self.assertIn("canBatchUploader.noteRx", main_cpp)
         self.assertIn("canBatchUploader.loop", main_cpp)

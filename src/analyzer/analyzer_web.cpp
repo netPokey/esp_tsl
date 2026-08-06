@@ -108,8 +108,9 @@ portMUX_TYPE g_powerMux = portMUX_INITIALIZER_UNLOCKED;
 AnalyzerWifiCredentials g_pendingWifi;
 volatile bool g_pendingWifiValid = false;
 portMUX_TYPE g_uploadMux = portMUX_INITIALIZER_UNLOCKED;
+enum class PendingUploadAction : uint8_t { None, Save, Start, Stop };
 AnalyzerUploadConfig g_pendingUpload;
-volatile bool g_pendingUploadValid = false;
+volatile PendingUploadAction g_pendingUploadAction = PendingUploadAction::None;
 bool g_uploadApplyFailed = false;
 char g_uploadApplyError[48] = {};
 
@@ -147,10 +148,17 @@ String uploadStatusJson()
     JsonDocument doc;
     doc["ok"] = g_uploader != nullptr && g_uploader->taskReady();
     JsonObject config = doc["config"].to<JsonObject>();
-    config["mode"] = analyzerUploadModeName(st.mode);
+    config["filter"] = analyzerUploadModeName(st.mode);
+    config["buses"] = analyzerUploadBusesName(st.busMask);
     config["url"] = st.url;
+    config["transport"] = "bin-v1";
+    JsonObject session = doc["session"].to<JsonObject>();
+    session["state"] = st.sessionState == CanUploadSessionState::Active ? "active" :
+                       st.sessionState == CanUploadSessionState::Stopping ? "stopping" : "inactive";
+    session["active"] = st.sessionState != CanUploadSessionState::Inactive;
+    session["session_seq"] = st.sessionSeq;
     JsonObject apply = doc["apply"].to<JsonObject>();
-    apply["pending"] = g_pendingUploadValid;
+    apply["pending"] = g_pendingUploadAction != PendingUploadAction::None;
     apply["failed"] = g_uploadApplyFailed;
     apply["last_error"] = g_uploadApplyError;
     JsonObject runtime = doc["runtime"].to<JsonObject>();
@@ -163,6 +171,8 @@ String uploadStatusJson()
     runtime["upload_dropped_frames"] = st.uploadDropped;
     runtime["config_discarded_frames"] = st.configDiscarded;
     runtime["filtered_frames"] = st.filteredFrames;
+    runtime["bus_filtered_frames"] = st.busFilteredFrames;
+    runtime["stop_discarded_frames"] = st.stopDiscardedFrames;
     runtime["last_http"] = st.lastHttpCode;
     runtime["pending_high_water"] = st.pendingHighWater;
     runtime["overload_events"] = st.overloadEvents;
@@ -236,53 +246,64 @@ void processPendingWifi()
         analyzerWifiSaveAndConnect(credentials.ssid, credentials.pass);
 }
 
-bool enqueuePendingUpload(const AnalyzerUploadConfig &config)
+bool enqueuePendingUpload(PendingUploadAction action, const AnalyzerUploadConfig *config = nullptr)
 {
     bool accepted = false;
     portENTER_CRITICAL(&g_uploadMux);
-    if (!g_pendingUploadValid)
+    if (g_pendingUploadAction == PendingUploadAction::None)
     {
-        g_pendingUpload = config;
-        g_pendingUploadValid = true;
+        if (config) g_pendingUpload = *config;
+        g_pendingUploadAction = action;
         accepted = true;
     }
     portEXIT_CRITICAL(&g_uploadMux);
     return accepted;
 }
 
-bool takePendingUpload(AnalyzerUploadConfig &config)
+PendingUploadAction takePendingUpload(AnalyzerUploadConfig &config)
 {
-    bool found = false;
     portENTER_CRITICAL(&g_uploadMux);
-    if (g_pendingUploadValid)
-    {
-        config = g_pendingUpload;
-        g_pendingUploadValid = false;
-        found = true;
-    }
+    const PendingUploadAction action = g_pendingUploadAction;
+    if (action == PendingUploadAction::Save) config = g_pendingUpload;
+    g_pendingUploadAction = PendingUploadAction::None;
     portEXIT_CRITICAL(&g_uploadMux);
-    return found;
+    return action;
 }
 
 void processPendingUpload()
 {
     AnalyzerUploadConfig config;
-    if (!takePendingUpload(config))
-        return;
-
+    const PendingUploadAction action = takePendingUpload(config);
+    if (action == PendingUploadAction::None) return;
     g_uploadApplyFailed = false;
     g_uploadApplyError[0] = '\0';
-    if (!analyzerUploadSave(config))
-    {
-        g_uploadApplyFailed = true;
-        strlcpy(g_uploadApplyError, "nvs_write_failed", sizeof(g_uploadApplyError));
-        return;
-    }
-    if (!g_uploader || !g_uploader->taskReady() ||
-        !g_uploader->configure(config.mode, config.url, 1000))
+    if (!g_uploader || !g_uploader->taskReady())
     {
         g_uploadApplyFailed = true;
         strlcpy(g_uploadApplyError, "uploader_unavailable", sizeof(g_uploadApplyError));
+        return;
+    }
+    if (action == PendingUploadAction::Start)
+    {
+        memset(g_dirty, 0, sizeof(g_dirty));
+        if (!g_uploader->startSession())
+        {
+            g_uploadApplyFailed = true;
+            strlcpy(g_uploadApplyError, "session_stopping", sizeof(g_uploadApplyError));
+        }
+        return;
+    }
+    if (action == PendingUploadAction::Stop)
+    {
+        g_uploader->stopSession();
+        return;
+    }
+    if (!analyzerUploadSave(config) ||
+        !g_uploader->configure(config.mode, config.url, 1000,
+                               CanUploadTransport::BinaryV1, config.busMask))
+    {
+        g_uploadApplyFailed = true;
+        strlcpy(g_uploadApplyError, "config_apply_failed", sizeof(g_uploadApplyError));
     }
 }
 
@@ -351,7 +372,8 @@ void drainQueueIntoTable()
         if (g_table)
         {
             g_table->update(cap);
-            markDirty(cap.channel, cap.id);
+            if (!g_uploader || !g_uploader->sessionActive())
+                markDirty(cap.channel, cap.id);
         }
     }
     if (g_queue->size() > 0 && (processed >= kMaxDrainFramesPerLoop ||
@@ -389,7 +411,7 @@ WsFrameRecord toWire(uint8_t channel, uint32_t id, const IdRecord &record, uint6
 // 只推有变化/新到达的 ID，浏览器端按 ID 覆盖更新，避免每次发送完整 4096 行表。
 void pushDelta()
 {
-    if (!g_table || ws.count() == 0)
+    if (!g_table || ws.count() == 0 || (g_uploader && g_uploader->sessionActive()))
         return;
     // 背压保护：任一客户端的发送队列已满时整轮跳过，且不触碰 dirty 位。
     // delta 是"最新值覆盖"语义，丢掉中间一轮无害；dirty 位保留到客户端追上后再发，
@@ -554,7 +576,7 @@ void analyzerWebBegin()
                       request->send(400, "application/json", "{\"ok\":false,\"error\":\"body_too_large\"}");
                       return;
                   }
-                  if (g_pendingUploadValid)
+                  if (g_pendingUploadAction != PendingUploadAction::None || (g_uploader && g_uploader->sessionActive()))
                   {
                       request->send(409, "application/json", "{\"ok\":false,\"error\":\"pending_busy\"}");
                       return;
@@ -588,18 +610,31 @@ void analyzerWebBegin()
                       return;
                   }
                   AnalyzerUploadConfig config;
-                  if (!analyzerUploadSanitizeConfig(doc["mode"] | "", doc["url"] | "", config))
+                  if (!analyzerUploadSanitizeConfig(doc["filter"] | "", doc["buses"] | "", doc["url"] | "", config))
                   {
                       request->send(400, "application/json", "{\"ok\":false,\"error\":\"invalid_config\"}");
                       return;
                   }
-                  if (!enqueuePendingUpload(config))
+                  if (!enqueuePendingUpload(PendingUploadAction::Save, &config))
                   {
                       request->send(409, "application/json", "{\"ok\":false,\"error\":\"pending_busy\"}");
                       return;
                   }
                   request->send(200, "application/json", "{\"ok\":true,\"pending\":true}");
               });
+
+    server.on("/api/upload/start", HTTP_POST, [](AsyncWebServerRequest *request) {
+        if (!enqueuePendingUpload(PendingUploadAction::Start))
+            request->send(409, "application/json", "{\"ok\":false,\"error\":\"pending_busy\"}");
+        else
+            request->send(200, "application/json", "{\"ok\":true,\"pending\":true}");
+    });
+    server.on("/api/upload/stop", HTTP_POST, [](AsyncWebServerRequest *request) {
+        if (!enqueuePendingUpload(PendingUploadAction::Stop))
+            request->send(409, "application/json", "{\"ok\":false,\"error\":\"pending_busy\"}");
+        else
+            request->send(200, "application/json", "{\"ok\":true,\"pending\":true}");
+    });
 
     // AsyncWebServer 以分片方式交付 POST body；这里手动聚合到固定缓冲，避免动态分配。
     server.on("/api/wifi", HTTP_POST,

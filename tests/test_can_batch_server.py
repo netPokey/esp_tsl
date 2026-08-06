@@ -1,12 +1,48 @@
 import json
 import tempfile
 import unittest
+import struct
 from pathlib import Path
 
-from can_batch_server import append_batch
+from can_batch_server import append_batch, parse_binary_batch
+
+
+def binary_fixture():
+    device = b"can-analyzer-test"
+    header = bytearray(24 + len(device))
+    header[:4] = b"CBIN"
+    struct.pack_into("<BBHHHIIB", header, 4, 1, 0, len(header), 24, 2, 8, 1234, len(device))
+    header[24:] = device
+    records = bytearray(48)
+    struct.pack_into("<IIIBBBB", records, 0, 10, 100, 0x107, 0, 3, 0, 0)
+    records[16:19] = b"\x01\x02\x03"
+    struct.pack_into("<IIIBBBB", records, 24, 11, 101, 0x212, 1, 2, 0, 0)
+    records[40:42] = b"\xAA\xBB"
+    return bytes(header + records)
 
 
 class CanBatchServerTest(unittest.TestCase):
+    def test_parse_binary_batch_matches_json_contract(self):
+        payload = parse_binary_batch(binary_fixture())
+        self.assertEqual("can-analyzer-test", payload["device_id"])
+        self.assertEqual(8, payload["batch_seq"])
+        self.assertEqual(1234, payload["uptime_ms"])
+        self.assertEqual(
+            [
+                {"seq": 10, "bus": "CAN_A", "ts": 100, "id": 0x107, "dlc": 3, "data": "01 02 03"},
+                {"seq": 11, "bus": "CAN_B", "ts": 101, "id": 0x212, "dlc": 2, "data": "AA BB"},
+            ], payload["frames"])
+
+    def test_binary_parser_rejects_invalid_fields(self):
+        cases = []
+        bad = bytearray(binary_fixture()); bad[:4] = b"NOPE"; cases.append((bad, "invalid_magic"))
+        bad = bytearray(binary_fixture()); bad[4] = 2; cases.append((bad, "unsupported_version"))
+        bad = bytearray(binary_fixture()); bad[24 + len(b"can-analyzer-test") + 12] = 8; cases.append((bad, "invalid_record"))
+        bad = bytearray(binary_fixture()); bad[24 + len(b"can-analyzer-test") + 19] = 1; cases.append((bad, "invalid_padding"))
+        for body, error in cases:
+            with self.subTest(error=error), self.assertRaisesRegex(ValueError, error):
+                parse_binary_batch(bytes(body))
+
     def test_append_batch_records_batch_and_expanded_frames(self):
         payload = {
             "device_id": "esp32-test",

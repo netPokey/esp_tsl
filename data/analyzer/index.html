@@ -34,14 +34,18 @@
     <div class="panel-summary">将逐帧 CAN 数据批量发送到 can_batch_server.py。HTTP 为明文传输，仅应在可信网络使用；网络上传不会启用 CAN TX。</div>
     <div class="network-grid">
       <label>服务器地址 <input id="upload-url" type="text" placeholder="http://192.168.1.20:48601"/></label>
-      <label>上传模式
+      <label>帧过滤
         <select id="upload-mode">
-          <option value="off">不发送</option>
           <option value="all">发送全部 CAN 消息</option>
           <option value="critical">仅发送关键消息（69 ID）</option>
         </select>
       </label>
-      <button id="upload-save-btn">保存并应用</button>
+      <label>上传总线
+        <select id="upload-buses"><option value="both">CAN_A + CAN_B</option><option value="a">仅 CAN_A</option><option value="b">仅 CAN_B</option></select>
+      </label>
+      <button id="upload-save-btn">保存配置（不会启动）</button>
+      <button id="upload-start-btn">开始上传</button>
+      <button id="upload-stop-btn" disabled>停止上传</button>
       <button id="upload-refresh-btn">刷新上传状态</button>
       <span id="upload-status">上传状态：未知</span>
     </div>

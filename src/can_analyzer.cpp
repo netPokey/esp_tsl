@@ -102,8 +102,9 @@ void setup()
     char deviceId[40];
     snprintf(deviceId, sizeof(deviceId), "can-analyzer-%012llX",
              static_cast<unsigned long long>(ESP.getEfuseMac()));
-    g_uploader.begin(deviceId);
-    g_uploader.configure(uploadConfig.mode, uploadConfig.url, 1000);
+    g_uploader.begin(deviceId, false);  // 每次启动强制 inactive，必须由页面手动开始。
+    g_uploader.configure(uploadConfig.mode, uploadConfig.url, 1000,
+                         CanUploadTransport::BinaryV1, uploadConfig.busMask);
 
     // WiFi + Web：把队列/状态表/统计/上传器交给 Web 层（loopTask 消费侧）。
     const String ip = analyzerWifiBegin();
