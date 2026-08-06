@@ -24,6 +24,7 @@ void FrameQueue::init(CapturedFrame *buffer, uint16_t capacity)
     STORE(head_, 0);
     STORE(tail_, 0);
     STORE(dropped_, 0);
+    STORE(highWater_, 0);
 }
 
 // 生产者侧（CAN rx_task）。返回 false 表示队满丢帧。
@@ -39,6 +40,11 @@ bool FrameQueue::push(const CapturedFrame &frame)
     }
     buffer_[head] = frame;   // 先写数据，
     STORE(head_, next);      // 再以 release 发布索引，顺序不可颠倒（见文件头说明）。
+    const uint16_t tail = LOAD(tail_);
+    const uint16_t depth = next >= tail ? static_cast<uint16_t>(next - tail)
+                                        : static_cast<uint16_t>(capacity_ - tail + next);
+    if (depth > LOAD(highWater_))
+        STORE(highWater_, depth);
     return true;
 }
 
@@ -57,4 +63,17 @@ bool FrameQueue::pop(CapturedFrame &out)
 uint32_t FrameQueue::dropped() const
 {
     return LOAD(dropped_);
+}
+
+uint16_t FrameQueue::size() const
+{
+    const uint16_t head = LOAD(head_);
+    const uint16_t tail = LOAD(tail_);
+    return head >= tail ? static_cast<uint16_t>(head - tail)
+                        : static_cast<uint16_t>(capacity_ - tail + head);
+}
+
+uint16_t FrameQueue::highWater() const
+{
+    return LOAD(highWater_);
 }

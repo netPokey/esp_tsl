@@ -21,6 +21,9 @@ struct RxTaskContext
 };
 
 RxTaskContext g_ctx;
+constexpr uint8_t kMaxFramesPerChannelPerRound = 32;
+portMUX_TYPE g_statsMux = portMUX_INITIALIZER_UNLOCKED;
+RxTaskStats g_stats;
 
 // 采集任务句柄 + MCP2515 INT 的 ISR。INT 拉低(收到帧)即唤醒任务立刻 drain，
 // 把收帧延迟从"1ms 轮询"降到 ISR 级，消除 MCP2515 仅 2 个接收缓冲在突发下的溢出。
@@ -35,14 +38,15 @@ void IRAM_ATTR rxOnCanInt()
 
 // 把指定通道驱动里已到达的帧全部读空并逐帧入队。channel: 0=A, 1=B。
 // 在 Core1 采集任务循环中调用。driver 为空（通道未启用）时直接返回。
-void drainInto(FrameQueue *queue, CanDriver *driver, uint8_t channel)
+bool drainInto(FrameQueue *queue, CanDriver *driver, uint8_t channel)
 {
     if (!driver)
-        return;
+        return false;
 
     CanFrame frame;
-    // 循环直到驱动 read 返回 false，确保把驱动缓冲一次排空，降低硬件层溢出风险。
-    while (driver->read(frame))
+    uint8_t count = 0;
+    // 每轮有界读取，避免持续高流量时 priority 10 的任务长期饿死同核 loopTask。
+    while (count < kMaxFramesPerChannelPerRound && driver->read(frame))
     {
         CapturedFrame cap;
         cap.id = frame.id;
@@ -53,7 +57,15 @@ void drainInto(FrameQueue *queue, CanDriver *driver, uint8_t channel)
         for (uint8_t i = 0; i < 8; ++i)
             cap.data[i] = frame.data[i];
         queue->push(cap);  // 队满则 push 内部丢帧并计数，这里不阻塞。
+        ++count;
     }
+    const bool hitBudget = count == kMaxFramesPerChannelPerRound;
+    portENTER_CRITICAL(&g_statsMux);
+    g_stats.frames[channel] += count;
+    if (hitBudget)
+        ++g_stats.budgetHits[channel];
+    portEXIT_CRITICAL(&g_statsMux);
+    return hitBudget;
 }
 
 // Core1 任务主循环：每轮排空两路通道，然后阻塞等待。
@@ -65,11 +77,23 @@ void rxTaskLoop(void *arg)
     RxTaskContext *ctx = static_cast<RxTaskContext *>(arg);
     for (;;)
     {
-        drainInto(ctx->queue, ctx->driverA, 0);
-        drainInto(ctx->queue, ctx->driverB, 1);
-        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1));
+        const bool aBusy = drainInto(ctx->queue, ctx->driverA, 0);
+        const bool bBusy = drainInto(ctx->queue, ctx->driverB, 1);
+        if (aBusy || bBusy)
+            vTaskDelay(1);  // 高频持续输入也必须给同核 Web/loop 消费者执行机会。
+        else
+            ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1));
     }
 }
+}
+
+RxTaskStats rxTaskStats()
+{
+    RxTaskStats snapshot;
+    portENTER_CRITICAL(&g_statsMux);
+    snapshot = g_stats;
+    portEXIT_CRITICAL(&g_statsMux);
+    return snapshot;
 }
 
 void rxTaskStart(CanDriver *driverA, CanDriver *driverB, FrameQueue *queue)

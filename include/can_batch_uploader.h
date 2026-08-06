@@ -35,6 +35,9 @@ struct CanUploadStatusSnapshot
     uint32_t uploadDropped = 0;
     uint32_t configDiscarded = 0;
     uint32_t filteredFrames = 0;
+    uint16_t pendingHighWater = 0;
+    uint32_t overloadEvents = 0;
+    bool admissionPaused = false;
     int lastHttpCode = 0;
 };
 
@@ -132,21 +135,30 @@ public:
                       uint8_t dlc,
                       const uint8_t *data)
     {
+        // 69-ID 判断是纯只读二分查找，移到临界区外，避免每个非关键帧都关中断。
+        CanUploadMode mode;
         portENTER_CRITICAL(&mux_);
-        if (mode_ == CanUploadMode::Off)
+        mode = mode_;
+        portEXIT_CRITICAL(&mux_);
+        if (mode == CanUploadMode::Off)
+            return;
+        if (mode == CanUploadMode::Critical && !analyzer::isAnalyzerCriticalCanId(id))
         {
+            portENTER_CRITICAL(&mux_);
+            ++filteredFrames_;
             portEXIT_CRITICAL(&mux_);
             return;
         }
-        if (mode_ == CanUploadMode::Critical && !analyzer::isAnalyzerCriticalCanId(id))
-        {
-            filteredFrames_++;
-            portEXIT_CRITICAL(&mux_);
-            return;
-        }
+
+        portENTER_CRITICAL(&mux_);
         if (pendingCount_ >= CAN_UPLOAD_BATCH_SIZE)
         {
-            uploadDropped_++;
+            ++uploadDropped_;
+            if (!admissionPaused_)
+            {
+                admissionPaused_ = true;
+                ++overloadEvents_;
+            }
             portEXIT_CRITICAL(&mux_);
             return;
         }
@@ -162,6 +174,8 @@ public:
             memcpy(entry.data, data, entry.dlc);
         if (pendingCount_ == 1)
             firstPendingAtMs_ = millis();
+        if (pendingCount_ > pendingHighWater_)
+            pendingHighWater_ = pendingCount_;
         portEXIT_CRITICAL(&mux_);
     }
 
@@ -184,6 +198,7 @@ public:
             memcpy(uploadBuffer_, pendingBuffer_, uploadCount_ * sizeof(CanUploadEntry));
             pendingCount_ = 0;
             firstPendingAtMs_ = 0;
+            admissionPaused_ = false;
             copyBounded(activeUploadUrl_, sizeof(activeUploadUrl_), url_);
             uploadInProgress_ = true;
             notify = true;
@@ -208,6 +223,9 @@ public:
         result.uploadDropped = uploadDropped_;
         result.configDiscarded = configDiscarded_;
         result.filteredFrames = filteredFrames_;
+        result.pendingHighWater = pendingHighWater_;
+        result.overloadEvents = overloadEvents_;
+        result.admissionPaused = admissionPaused_;
         result.lastHttpCode = lastHttpCode_;
         portEXIT_CRITICAL(&mux_);
         return result;
@@ -271,8 +289,9 @@ private:
         batchSequence = ++batchSeq_;
         portEXIT_CRITICAL(&mux_);
 
-        String out;
-        out.reserve(static_cast<unsigned int>(count) * 120U + 160U);
+        payload_.clear();
+        payload_.reserve(static_cast<unsigned int>(count) * 120U + 160U);
+        String &out = payload_;
         out += "{\"device_id\":\"";
         out += deviceId_;
         out += "\",\"uptime_ms\":";
@@ -336,6 +355,7 @@ private:
     char deviceId_[CAN_UPLOAD_MAX_DEVICE_ID_LENGTH + 1] = "esp32-can";
     char url_[CAN_UPLOAD_MAX_URL_LENGTH + 1] = "http://1.116.182.175:48601/can/batch";
     char activeUploadUrl_[CAN_UPLOAD_MAX_URL_LENGTH + 1] = {};
+    String payload_;
     CanUploadEntry pendingBuffer_[CAN_UPLOAD_BATCH_SIZE];
     CanUploadEntry uploadBuffer_[CAN_UPLOAD_BATCH_SIZE];
     TaskHandle_t uploadTaskHandle_ = nullptr;
@@ -352,5 +372,8 @@ private:
     uint32_t uploadDropped_ = 0;
     uint32_t configDiscarded_ = 0;
     uint32_t filteredFrames_ = 0;
+    uint16_t pendingHighWater_ = 0;
+    uint32_t overloadEvents_ = 0;
+    bool admissionPaused_ = false;
     int lastHttpCode_ = 0;
 };

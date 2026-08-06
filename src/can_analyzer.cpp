@@ -138,11 +138,15 @@ void loop()
         const uint32_t extRate = extNow - lastExtRx;  // 其中扩展帧(会被分析层 id>=2048 过滤掉)
         lastRawRx = rawNow;
         lastExtRx = extNow;
-        analyzerWebLogPrintf("[diag] A 硬件收=%lu/s 扩展=%lu/s 真溢出=%lu REC=%u TEC=%u%s",
-            static_cast<unsigned long>(hwRate), static_cast<unsigned long>(extRate),
+        const RxTaskStats rxStats = rxTaskStats();
+        analyzerWebLogPrintf("[diag] A=%lu/s B总=%lu RX预算=%lu/%lu Q=%u/%u 高水=%u 丢=%lu 溢出=%lu REC=%u TEC=%u%s",
+            static_cast<unsigned long>(hwRate), static_cast<unsigned long>(rxStats.frames[1]),
+            static_cast<unsigned long>(rxStats.budgetHits[0]), static_cast<unsigned long>(rxStats.budgetHits[1]),
+            static_cast<unsigned>(g_queue.size()), static_cast<unsigned>(g_queue.capacity()),
+            static_cast<unsigned>(g_queue.highWater()), static_cast<unsigned long>(g_queue.dropped()),
             static_cast<unsigned long>(g_canA->rxOverflowCount()),
             static_cast<unsigned>(recA), static_cast<unsigned>(g_canA->txErrorCounter()),
-            recA > 127 ? "  <- 错误被动: 查位定时/晶振/接线" : "");
+            recA > 127 ? " <-查位定时/晶振/接线" : "");
     }
 
     analyzerWebLoop();

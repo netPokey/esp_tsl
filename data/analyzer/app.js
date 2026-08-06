@@ -434,7 +434,8 @@ function parseDelta(buf) {
       rec = { key, ch, id, dlc: 0, data: new Array(8).fill(0), byteAge: new Array(8).fill(0),
         count: 0, lastRx: 0, deltaMs: 0, periodMs: 0, jitterMs: 0, changeScore: 0, flags: 0,
         noiseMask: new Array(8).fill(0), moveMask: new Array(8).fill(0), candMask: new Array(8).fill(0),
-        candBits: 0, sampled: false, isNew: analysisPhase === 'watching' };
+        candBits: 0, sampled: false, isNew: analysisPhase === 'watching', decoded: null,
+        decodedDlc: -1, decodedData: new Array(8).fill(-1) };
       records[key] = rec;
     }
     rec.dlc = dv.getUint8(o); o += 1;
@@ -452,7 +453,14 @@ function parseDelta(buf) {
       rec.data[b] = nb;
     }
     o += 8;
-    rec.decoded = canDecoder ? canDecoder.decodeCanRecord({ channel: ch, id, dlc: rec.dlc, data: rec.data }) : { status: 'unknown' };
+    // 仅数据或 DLC 变化时重新解码；同 ID 高频重复帧直接复用结果，避免 BigInt 热路径拖慢浏览器。
+    let decodeChanged = rec.decodedDlc !== rec.dlc;
+    for (let b = 0; b < 8 && !decodeChanged; b++) decodeChanged = rec.decodedData[b] !== rec.data[b];
+    if (decodeChanged) {
+      rec.decoded = canDecoder ? canDecoder.decodeCanRecord({ channel: ch, id, dlc: rec.dlc, data: rec.data }) : { status: 'unknown' };
+      rec.decodedDlc = rec.dlc;
+      for (let b = 0; b < 8; b++) rec.decodedData[b] = rec.data[b];
+    }
     rec.sampled = true;
     if (analysisPhase === 'watching') {
       const had = rec.candBits > 0;

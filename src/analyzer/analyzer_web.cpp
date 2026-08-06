@@ -87,7 +87,15 @@ constexpr uint32_t kStatsIntervalMs = 1000;
 // 单轮 pushDelta 最多发送的 WS 帧数。即便大量 ID 同时 dirty（如首个客户端刚连上，
 // 此前积累的 dirty 位会一次性全部待发），也不会一口气塞爆 AsyncWebSocket 的发送队列
 // （ESP32Async 默认 WS_MAX_QUEUED_MESSAGES=32）；超出的 dirty 位保留，下一轮继续发。
-constexpr size_t kMaxFlushesPerPush = 16;
+constexpr size_t kMaxFlushesPerPush = 6;
+constexpr uint32_t kMaxDirtyScanPerPush = 1024;
+constexpr uint16_t kMaxDrainFramesPerLoop = 128;
+constexpr uint32_t kMaxDrainUsPerLoop = 2000;
+uint32_t g_dirtyScanCursor = 0;
+uint32_t g_wsBackpressureSkips = 0;
+uint32_t g_wsFlushes = 0;
+uint32_t g_webDrainBudgetHits = 0;
+uint32_t g_webLoopMaxUs = 0;
 
 // WiFi POST 只接收 ssid/pass，256 字节足够；超限直接 400，防止 Async 回调里堆分配。
 constexpr size_t kMaxWifiJsonBytes = 256;
@@ -156,6 +164,14 @@ String uploadStatusJson()
     runtime["config_discarded_frames"] = st.configDiscarded;
     runtime["filtered_frames"] = st.filteredFrames;
     runtime["last_http"] = st.lastHttpCode;
+    runtime["pending_high_water"] = st.pendingHighWater;
+    runtime["overload_events"] = st.overloadEvents;
+    runtime["admission_paused"] = st.admissionPaused;
+    runtime["queue_depth"] = g_queue ? g_queue->size() : 0;
+    runtime["queue_high_water"] = g_queue ? g_queue->highWater() : 0;
+    runtime["web_drain_budget_hits"] = g_webDrainBudgetHits;
+    runtime["web_loop_max_us"] = g_webLoopMaxUs;
+    runtime["ws_backpressure_skips"] = g_wsBackpressureSkips;
     String out;
     serializeJson(doc, out);
     return out;
@@ -315,8 +331,13 @@ void drainQueueIntoTable()
         return;
 
     CapturedFrame cap;
-    while (g_queue->pop(cap))
+    uint16_t processed = 0;
+    const uint64_t startedUs = static_cast<uint64_t>(esp_timer_get_time());
+    while (processed < kMaxDrainFramesPerLoop &&
+           static_cast<uint64_t>(esp_timer_get_time()) - startedUs < kMaxDrainUsPerLoop &&
+           g_queue->pop(cap))
     {
+        ++processed;
         if (cap.id >= kStdIdCount || cap.channel >= kChannelCount)
             continue;
         if (g_uploader)
@@ -333,6 +354,9 @@ void drainQueueIntoTable()
             markDirty(cap.channel, cap.id);
         }
     }
+    if (g_queue->size() > 0 && (processed >= kMaxDrainFramesPerLoop ||
+        static_cast<uint64_t>(esp_timer_get_time()) - startedUs >= kMaxDrainUsPerLoop))
+        ++g_webDrainBudgetHits;
 }
 
 // 把内部 IdRecord 转成紧凑的 WS 二进制记录。
@@ -371,51 +395,65 @@ void pushDelta()
     // delta 是"最新值覆盖"语义，丢掉中间一轮无害；dirty 位保留到客户端追上后再发，
     // 避免在拥塞客户端上无限堆积 WS 消息、耗尽堆内存。
     if (!ws.availableForWriteAll())
+    {
+        ++g_wsBackpressureSkips;
         return;
+    }
 
     static uint8_t buf[kPushBufBytes];
     static WsFrameRecord batch[kFrameDeltaBatchCapacity];
+    static uint32_t batchKeys[kFrameDeltaBatchCapacity];
     size_t batchN = 0;
     size_t flushes = 0;
+    uint32_t scanned = 0;
     const uint64_t nowUs = static_cast<uint64_t>(esp_timer_get_time());
 
-    auto flush = [&]() {
+    auto flush = [&]() -> bool {
         if (batchN == 0)
-            return;
-        // builder 会再次按 cap 裁剪；这里的 batchN 已按 kFrameDeltaBatchCapacity 控制。
-        const size_t n = wsBuildFrameDelta(buf, sizeof(buf), batch, static_cast<uint8_t>(batchN));
-        if (n > 0)
+            return true;
+        if (!ws.availableForWriteAll())
         {
-            ws.binaryAll(buf, n);
-            ++flushes;
+            ++g_wsBackpressureSkips;
+            return false;
         }
+        const size_t n = wsBuildFrameDelta(buf, sizeof(buf), batch, static_cast<uint8_t>(batchN));
+        if (n == 0)
+            return false;
+        ws.binaryAll(buf, n);
+        for (size_t i = 0; i < batchN; ++i)
+        {
+            const uint32_t key = batchKeys[i];
+            g_dirty[key >> 3] &= static_cast<uint8_t>(~(1u << (key & 7)));
+        }
+        ++flushes;
+        ++g_wsFlushes;
         batchN = 0;
+        return true;
     };
 
-    for (uint32_t key = 0; key < kDirtyKeys; ++key)
+    while (scanned < kMaxDirtyScanPerPush && flushes < kMaxFlushesPerPush)
     {
+        const uint32_t key = g_dirtyScanCursor;
+        g_dirtyScanCursor = (g_dirtyScanCursor + 1) % kDirtyKeys;
+        ++scanned;
         if ((g_dirty[key >> 3] & (1u << (key & 7))) == 0)
             continue;
-        // 到达单轮发送预算就停下：当前 key 及之后的 dirty 位保持置位（尚未清位），下一轮继续。
-        if (flushes >= kMaxFlushesPerPush)
-            break;
-        // 先清位再取快照；若之后同一轮 drain 又更新同一 ID，会重新置位并在下一轮推送。
-        g_dirty[key >> 3] &= static_cast<uint8_t>(~(1u << (key & 7)));
 
         const uint8_t channel = static_cast<uint8_t>(key / kStdIdCount);
         const uint32_t id = key % kStdIdCount;
+        batchKeys[batchN] = key;
         batch[batchN++] = toWire(channel, id, g_table->record(channel, id), nowUs);
-        if (batchN >= kFrameDeltaBatchCapacity)
-            flush();
+        if (batchN >= kFrameDeltaBatchCapacity && !flush())
+            return;
     }
-    flush();
+    (void)flush();
 }
 
 // 每秒推送一次总线统计。rx_err_a/b 现承载驱动层的硬件级丢帧（CAN_A 溢出事件、CAN_B rx_missed），
 // 让前端能看见 FrameQueue 之外、被芯片/驱动队列丢掉的帧；bus_off 仍保留为 0。
 void pushBusStats()
 {
-    if (!g_stats || ws.count() == 0)
+    if (!g_stats || ws.count() == 0 || !ws.availableForWriteAll())
         return;
 
     const BusStatsSnapshot snapshot = g_stats->snapshot();
@@ -615,6 +653,7 @@ void analyzerWebBegin()
 // Arduino 主循环每轮调用。顺序很重要：先 drain 队列再推送，这样浏览器看到的是最新状态。
 void analyzerWebLoop()
 {
+    const uint64_t loopStartedUs = static_cast<uint64_t>(esp_timer_get_time());
     drainQueueIntoTable();
     processPendingUpload();
     if (g_uploader)
@@ -638,4 +677,7 @@ void analyzerWebLoop()
         g_lastStatsMs = now;
         pushBusStats();
     }
+    const uint32_t elapsedUs = static_cast<uint32_t>(static_cast<uint64_t>(esp_timer_get_time()) - loopStartedUs);
+    if (elapsedUs > g_webLoopMaxUs)
+        g_webLoopMaxUs = elapsedUs;
 }

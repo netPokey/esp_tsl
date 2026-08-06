@@ -18,6 +18,9 @@ public:
     bool pop(CapturedFrame &out);
 
     uint32_t dropped() const;
+    uint16_t size() const;
+    uint16_t capacity() const { return capacity_ > 0 ? static_cast<uint16_t>(capacity_ - 1) : 0; }
+    uint16_t highWater() const;
 
 private:
     CapturedFrame *buffer_ = nullptr;
@@ -25,4 +28,5 @@ private:
     Shared<uint16_t> head_{0};
     Shared<uint16_t> tail_{0};
     Shared<uint32_t> dropped_{0};
+    Shared<uint16_t> highWater_{0};
 };
