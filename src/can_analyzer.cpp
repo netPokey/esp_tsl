@@ -128,6 +128,10 @@ void loop()
     static uint32_t lastDiagMs = 0;
     static uint32_t lastRawRx = 0;
     static uint32_t lastExtRx = 0;
+    static uint32_t lastRxA = 0;
+    static uint32_t lastRxB = 0;
+    static uint32_t lastDrop = 0;
+    static uint32_t lastOverflow = 0;
     const uint32_t nowMs = millis();
     if (g_canA && nowMs - lastDiagMs >= 1000)
     {
@@ -140,12 +144,22 @@ void loop()
         lastRawRx = rawNow;
         lastExtRx = extNow;
         const RxTaskStats rxStats = rxTaskStats();
-        analyzerWebLogPrintf("[diag] A=%lu/s B总=%lu RX预算=%lu/%lu Q=%u/%u 高水=%u 丢=%lu 溢出=%lu REC=%u TEC=%u%s",
-            static_cast<unsigned long>(hwRate), static_cast<unsigned long>(rxStats.frames[1]),
+        const uint32_t dropNow = g_queue.dropped();
+        const uint32_t overflowNow = g_canA->rxOverflowCount();
+        const uint32_t rxADelta = rxStats.frames[0] - lastRxA;
+        const uint32_t rxBDelta = rxStats.frames[1] - lastRxB;
+        const uint32_t dropDelta = dropNow - lastDrop;
+        const uint32_t overflowDelta = overflowNow - lastOverflow;
+        lastRxA = rxStats.frames[0];
+        lastRxB = rxStats.frames[1];
+        lastDrop = dropNow;
+        lastOverflow = overflowNow;
+        analyzerWebLogPrintf("[diag] A读=%lu/s B读=%lu/s A预算=%lu B预算=%lu Q=%u/%u 高水=%u 丢=%lu(+%lu) 溢出=%lu(+%lu) REC=%u TEC=%u%s",
+            static_cast<unsigned long>(rxADelta), static_cast<unsigned long>(rxBDelta),
             static_cast<unsigned long>(rxStats.budgetHits[0]), static_cast<unsigned long>(rxStats.budgetHits[1]),
             static_cast<unsigned>(g_queue.size()), static_cast<unsigned>(g_queue.capacity()),
-            static_cast<unsigned>(g_queue.highWater()), static_cast<unsigned long>(g_queue.dropped()),
-            static_cast<unsigned long>(g_canA->rxOverflowCount()),
+            static_cast<unsigned>(g_queue.highWater()), static_cast<unsigned long>(dropNow), static_cast<unsigned long>(dropDelta),
+            static_cast<unsigned long>(overflowNow), static_cast<unsigned long>(overflowDelta),
             static_cast<unsigned>(recA), static_cast<unsigned>(g_canA->txErrorCounter()),
             recA > 127 ? " <-查位定时/晶振/接线" : "");
     }

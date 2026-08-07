@@ -503,6 +503,10 @@ function parseStats(buf) {
 
 // 建立只读 WS 连接；断线后 1 秒重连。前端不再向设备发送任何 WS 命令。
 function connect() {
+  if (globalThis.ANALYZER_HTTP_ONLY) {
+    statusEl.textContent = 'HTTP-only 诊断模式：CAN 实时 WS 已禁用';
+    return;
+  }
   ws = new WebSocket('ws://' + location.host + '/ws');
   ws.binaryType = 'arraybuffer';
   ws.onopen = () => { statusEl.textContent = 'WS：已连接'; };

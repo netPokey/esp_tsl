@@ -540,7 +540,9 @@ void analyzerWebSetContext(FrameQueue *queue, IdTable *table, BusStatsTracker *s
 // 注册所有 HTTP/WS 路由。当前没有任何入站 WS 命令，WebSocket 只做服务器推送。
 void analyzerWebBegin()
 {
+#if !ANALYZER_HTTP_ONLY
     server.addHandler(&ws);
+#endif
 
     // 轻量状态端点：前端仅用它显示 CAN_A/CAN_B 是否初始化成功。
     server.on("/api/status", HTTP_GET, [](AsyncWebServerRequest *request) {
@@ -701,6 +703,7 @@ void analyzerWebLoop()
     if (g_stats)
         g_stats->update(now, g_queue ? g_queue->dropped() : 0);
 
+#if !ANALYZER_HTTP_ONLY
     if (now - g_lastPushMs >= kPushIntervalMs)
     {
         g_lastPushMs = now;
@@ -712,6 +715,7 @@ void analyzerWebLoop()
         g_lastStatsMs = now;
         pushBusStats();
     }
+#endif
     const uint32_t elapsedUs = static_cast<uint32_t>(static_cast<uint64_t>(esp_timer_get_time()) - loopStartedUs);
     if (elapsedUs > g_webLoopMaxUs)
         g_webLoopMaxUs = elapsedUs;
