@@ -14,6 +14,16 @@ struct ReplayFrame {
   uint8_t data[8];
 };
 
+// 可由 PlatformIO build_flags 选择单 ID 固定回放，用于 CAN→SWD→BLE 同步验证。
+// 未定义 REPLAY_SINGLE_ID 时保持原始 17,756 帧全量回放。
+#ifdef REPLAY_SINGLE_ID
+static constexpr uint32_t REPLAY_FRAME_COUNT = 1;
+static const ReplayFrame REPLAY_FRAMES[] PROGMEM = {
+    {REPLAY_SINGLE_ID, REPLAY_SINGLE_DLC,
+     {REPLAY_D0, REPLAY_D1, REPLAY_D2, REPLAY_D3,
+      REPLAY_D4, REPLAY_D5, REPLAY_D6, REPLAY_D7}}
+};
+#else
 static constexpr uint32_t REPLAY_FRAME_COUNT = 17756;
 static const ReplayFrame REPLAY_FRAMES[] PROGMEM = {
     {0x2E1, 8, {0xFB, 0x19, 0x19, 0xCB, 0xAF, 0x1E, 0x0B, 0x00}},
@@ -17773,6 +17783,7 @@ static const ReplayFrame REPLAY_FRAMES[] PROGMEM = {
     {0x129, 8, {0x86, 0x28, 0x0A, 0x60, 0x00, 0x20, 0xFF, 0x3F}},
 {0x39b, 8, {0x00, 0x55, 0x55, 0x55, 0x00, 0x00, 0x5A, 0x45}}
 };
+#endif
 
 TWAIDriver canB(static_cast<gpio_num_t>(CAN_TX),
                 static_cast<gpio_num_t>(CAN_RX));
@@ -17810,7 +17821,9 @@ void sendNextReplayFrame() {
          framesSentThisLoop < 10) {
     if (replayIndex >= REPLAY_FRAME_COUNT) {
       replayIndex = 0;
+#ifndef REPLAY_SINGLE_ID
       Serial.println("Replay looping from start...");
+#endif
     }
 
     ReplayFrame replay;
@@ -17820,7 +17833,33 @@ void sendNextReplayFrame() {
     frame.id = replay.id;
     frame.dlc = replay.dlc <= 8 ? replay.dlc : 8;
     memcpy(frame.data, replay.data, sizeof(frame.data));
+    bool stopAfterThisFrame = false;
+#if defined(REPLAY_3E3_BIT1) || defined(REPLAY_STOP_AFTER_3E3)
+    if (frame.id == 0x3E3 && frame.dlc >= 1) {
+#ifdef REPLAY_3E3_BIT1
+      frame.data[0] |= 0x01;
+#endif
+#ifdef REPLAY_STOP_AFTER_3E3
+      stopAfterThisFrame = true;
+#endif
+    }
+#endif
     canB.send(frame);
+#ifdef REPLAY_STOP_AFTER_3E3
+    if (stopAfterThisFrame) {
+      replayDone = true;
+      Serial.printf("REPLAY_3E3_SENT id=0x%03lX d0=0x%02X; replay held\n",
+                    static_cast<unsigned long>(frame.id), frame.data[0]);
+    }
+#endif
+#ifdef REPLAY_SINGLE_ID
+    static uint32_t logDivider = 0;
+    if ((logDivider++ % 1000) == 0) {
+      Serial.printf("TX CAN_B index=%lu ",
+                    static_cast<unsigned long>(replayIndex));
+      printFrame("frame", frame);
+    }
+#endif
     replayIndex++;
 
     lastReplayUs += 500;
